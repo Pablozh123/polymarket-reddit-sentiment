@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+
+# Virtuelle Umgebung
+.venv/
+venv/
+env/
+
+# Generierte Daten (werden zur Laufzeit erzeugt)
+data/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Generierte Bilder
+notebooks/*.png
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store

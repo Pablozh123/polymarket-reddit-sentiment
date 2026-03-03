@@ -1,0 +1,23 @@
+# Core
+streamlit>=1.32.0
+requests>=2.31.0
+pandas>=2.2.0
+numpy>=1.26.0
+scipy>=1.13.0
+
+# Sentiment
+vaderSentiment>=3.3.2
+
+# Visualisierung
+matplotlib>=3.8.0
+plotly>=5.20.0
+
+# Umgebung
+python-dotenv>=1.0.1
+
+# Jupyter
+ipykernel>=6.29.0
+notebook>=7.0.0
+
+# Optional: Transformer-Modelle (FinBERT / Twitter-RoBERTa) – ~500 MB
+# pip install transformers torch
