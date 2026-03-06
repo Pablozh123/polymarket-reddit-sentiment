@@ -18,7 +18,7 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 MODEL_VADER   = "vader"
 MODEL_FINBERT = "finbert"
 MODEL_ROBERTA = "twitter-roberta"
-MODEL_NLI     = "MoritzLaurer/DeBERTa-v3-small-mnli-fever-anli-ling-binary"
+MODEL_NLI     = "MoritzLaurer/deberta-v3-base-zeroshot-v2.0"
 
 _TRANSFORMER_IDS = {
     MODEL_FINBERT: "ProsusAI/finbert",
