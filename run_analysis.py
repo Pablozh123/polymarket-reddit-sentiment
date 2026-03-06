@@ -21,6 +21,7 @@ MAX_MARKETS        = 20     # Mehr Märkte für bessere Statistik
 POSTS_PER_MARKET   = 30     # Mehr Posts für bessere Stichprobe
 COMMENT_LIMIT      = 10     # Kommentare pro Post mitholen
 INCLUDE_COMMENTS   = True   # Kommentare aktiviert
+INCLUDE_STANCE     = False  # True: +~10-20 Min., fügt stance_score zur CSV hinzu
 SENTIMENT_MODEL    = sentiment.MODEL_ROBERTA   # Twitter-RoBERTa: besser für Reddit-Stil
 SEMANTIC_THRESHOLD = 0.20   # Mindest-Ähnlichkeit zur Markt-Frage
 SUBREDDITS = ["politics", "worldnews", "stocks", "investing", "news",
@@ -173,6 +174,13 @@ def main():
             weighted_s = np.average(scored['compound'].values, weights=weights) if weights.sum() > 0 else mean_s
 
             polarity = question_polarity(question)
+
+            if INCLUDE_STANCE:
+                hyp = sentiment.question_to_hypothesis(question)
+                stance_s, _ = sentiment.detect_stance(scored, hyp)
+            else:
+                stance_s = float("nan")
+
             pairs.append({
                 'question':          question,
                 'probability':       prob,
@@ -181,6 +189,7 @@ def main():
                 'adjusted_compound': mean_s    * polarity,
                 'adjusted_weighted': weighted_s * polarity,
                 'polarity':          polarity,
+                'stance_score':      stance_s,
                 'n_posts':           n_posts,
                 'n_comments':        n_comments,
                 'n_total':           len(scored),

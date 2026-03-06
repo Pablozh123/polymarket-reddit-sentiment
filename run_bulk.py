@@ -19,6 +19,7 @@ from src import reddit, polymarket, sentiment
 MAX_MARKETS      = 30
 POSTS_PER_MARKET = 25
 INCLUDE_COMMENTS = False          # Schnellmodus: keine Kommentare
+INCLUDE_STANCE   = False          # True: +~5-10 Min., fügt stance_score zur CSV hinzu
 SENTIMENT_MODEL  = sentiment.MODEL_ROBERTA  # Twitter-RoBERTa: besser für Reddit-Stil
 SLEEP_BETWEEN    = 1.5            # s zwischen Märkten
 
@@ -149,6 +150,13 @@ def main():
             wtd_s  = np.average(scored["compound"].values, weights=w) if w.sum() > 0 else mean_s
 
             polarity = question_polarity(question)
+
+            if INCLUDE_STANCE:
+                hyp = sentiment.question_to_hypothesis(question)
+                stance_s, _ = sentiment.detect_stance(scored, hyp)
+            else:
+                stance_s = float("nan")
+
             pairs.append({
                 "question":          question,
                 "probability":       prob,
@@ -157,6 +165,7 @@ def main():
                 "adjusted_compound": mean_s * polarity,
                 "adjusted_weighted": wtd_s  * polarity,
                 "polarity":          polarity,
+                "stance_score":      stance_s,
                 "n_posts":           len(scored),
                 "n_comments":        0,
                 "n_total":           len(scored),

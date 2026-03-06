@@ -1,4 +1,5 @@
 """Sentiment analysis – VADER (default), FinBERT, Twitter-RoBERTa.
+Stance Detection – Zero-Shot NLI (DeBERTa-v3-small, ~85 MB).
 
 Modelle:
   'vader'           – regelbasiert, schnell, kein Download
@@ -9,6 +10,7 @@ Install für Transformer-Modelle:
   pip install transformers torch
 """
 
+import re
 import pandas as pd
 import numpy as np
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -16,6 +18,7 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 MODEL_VADER   = "vader"
 MODEL_FINBERT = "finbert"
 MODEL_ROBERTA = "twitter-roberta"
+MODEL_NLI     = "MoritzLaurer/DeBERTa-v3-small-mnli-fever-anli-ling-binary"
 
 _TRANSFORMER_IDS = {
     MODEL_FINBERT: "ProsusAI/finbert",
@@ -24,7 +27,8 @@ _TRANSFORMER_IDS = {
 
 _vader    = SentimentIntensityAnalyzer()
 _pipe_cache: dict = {}   # lazy: Modell nur beim ersten Aufruf laden
-_st_model = None          # sentence-transformers Modell (lazy)
+_nli_pipe  = None         # Zero-Shot NLI Pipeline (lazy)
+_st_model  = None         # sentence-transformers Modell (lazy)
 
 
 # ── interne Hilfsfunktionen ───────────────────────────────────────────────────
@@ -205,3 +209,83 @@ def aggregate(posts: pd.DataFrame) -> dict:
         "label":         _label(mean),
         "counts":        counts,
     }
+
+
+# ── Stance Detection (Zero-Shot NLI) ─────────────────────────────────────────
+
+def question_to_hypothesis(question: str) -> str:
+    """Konvertiert Polymarket-Frage in NLI-Hypothese.
+
+    Beispiele:
+      'Will Bitcoin reach $150k?'      → 'Bitcoin reach $150k'
+      'Will there be a US recession?'  → 'there be a US recession'
+    """
+    h = question.strip().rstrip("?")
+    h = re.sub(r"^[Ww]ill\s+", "", h)
+    return h
+
+
+def detect_stance(
+    posts: pd.DataFrame,
+    hypothesis: str,
+    batch_size: int = 8,
+) -> tuple[float, "pd.Series"]:
+    """Zero-Shot NLI Stance Detection.
+
+    Misst, ob Reddit-Posts glauben, dass das Ereignis eintritt.
+
+    Parameters
+    ----------
+    posts      : DataFrame mit Spalten 'title' und/oder 'text'
+    hypothesis : Deklarative Aussage (via question_to_hypothesis())
+    batch_size : Texte pro NLI-Batch (kleiner = weniger RAM)
+
+    Returns
+    -------
+    (mean_stance_score: float, per_post_scores: pd.Series)
+      +1  = alle Posts glauben, das Ereignis tritt ein
+      -1  = alle Posts glauben, das Ereignis tritt NICHT ein
+       0  = neutral / unentschieden
+    """
+    global _nli_pipe
+
+    if posts.empty:
+        return 0.0, pd.Series(dtype=float)
+
+    if _nli_pipe is None:
+        try:
+            from transformers import pipeline as hf_pipeline
+        except ImportError:
+            raise ImportError("Stance Detection benötigt: pip install transformers torch")
+        print(f"[stance] Lade '{MODEL_NLI}' (~85 MB, einmalig) …")
+        _nli_pipe = hf_pipeline(
+            "zero-shot-classification",
+            model=MODEL_NLI,
+            device=-1,
+        )
+        print("[stance] Modell geladen.")
+
+    titles   = posts.get("title", pd.Series([""] * len(posts))).fillna("")
+    texts    = posts.get("text",  pd.Series([""] * len(posts))).fillna("")
+    combined = (titles + " " + texts).str.strip().tolist()
+    combined = [t[:512] if t.strip() else " " for t in combined]
+
+    pos_label = f"{hypothesis} will happen"
+    neg_label = f"{hypothesis} will not happen"
+
+    scores: list[float] = []
+    for i in range(0, len(combined), batch_size):
+        batch = combined[i : i + batch_size]
+        try:
+            results = _nli_pipe(batch, candidate_labels=[pos_label, neg_label])
+            if isinstance(results, dict):
+                results = [results]
+            for r in results:
+                p = r["scores"][r["labels"].index(pos_label)]
+                n = r["scores"][r["labels"].index(neg_label)]
+                scores.append(p - n)
+        except Exception:
+            scores.extend([0.0] * len(batch))
+
+    series = pd.Series(scores, index=posts.index[:len(scores)])
+    return float(np.mean(scores)) if scores else 0.0, series
