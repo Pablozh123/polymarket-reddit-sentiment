@@ -9,12 +9,13 @@
 
 - Lädt Polymarket-Märkte (z. B. „Will Bitcoin hit $150k?") via öffentlicher API
 - Sucht passende Reddit-Posts (+ Kommentare) per Keyword-Extraktion
+- Filtert Posts semantisch nach Relevanz zur Markt-Frage (sentence-transformers)
 - Analysiert das Sentiment (VADER / FinBERT / Twitter-RoBERTa)
-- Korreliert Reddit-Stimmung mit Polymarket-Wahrscheinlichkeiten
+- Korreliert Reddit-Stimmung mit Polymarket-Wahrscheinlichkeiten nach Kategorie
 - Beantwortet 3 Forschungsfragen in Jupyter Notebooks (EDA → Bereinigung → Pipeline → Analyse)
 - Streamlit-Dashboard zur interaktiven Exploration
 
-**Kein API-Key erforderlich** – Reddit wird über die öffentliche JSON-API abgefragt.
+**Kein API-Key erforderlich** – Reddit wird über die öffentliche JSON-API oder optional PRAW abgefragt.
 
 ---
 
@@ -32,9 +33,7 @@
 ### 1. Projekt herunterladen / klonen
 
 ```bash
-# Option A: ZIP herunterladen und entpacken
-# Option B: Git
-git clone <repo-url>
+git clone https://github.com/Pablozh123/polymarket-reddit-sentiment.git
 cd polymarket-reddit-sentiment
 ```
 
@@ -60,20 +59,16 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> **Hinweis:** `requirements.txt` enthält bereits `transformers`, `torch` und
+> `sentence-transformers`. Der erste Aufruf der Transformer-Modelle lädt ca. 500–600 MB
+> (einmalig, werden gecacht).
+
 ### 4. Jupyter-Kernel registrieren
 
 Damit VS Code / Jupyter das richtige Python (aus der .venv) findet:
 
 ```bash
 python -m ipykernel install --user --name polymarket --display-name "Python (polymarket)"
-```
-
-### 5. Optional: FinBERT / Twitter-RoBERTa (ca. 500 MB)
-
-Nur nötig wenn in den Notebooks `SENTIMENT_MODEL = sentiment.MODEL_FINBERT` gesetzt ist:
-
-```bash
-pip install transformers torch
 ```
 
 ---
@@ -86,10 +81,36 @@ pip install transformers torch
 |----------|--------|
 | `notebooks/01_EDA.ipynb` | Explorative Datenanalyse – Verteilungen, Sentiment, Zeitverlauf |
 | `notebooks/02_Datenbereinigung.ipynb` | Missing Values (MCAR/MAR/MNAR), Duplikate, Winsorisierung → speichert `data/reddit_clean.csv` |
-| `notebooks/03_Pipeline.ipynb` | `SentimentPipeline`-Klasse, Multi-Topic-Vergleich |
-| `notebooks/04_Analyse.ipynb` | 3 Forschungsfragen: Korrelation, Subreddit-Vergleich, Zeitliche Muster |
+| `notebooks/03_Pipeline.ipynb` | `SentimentPipeline`-Klasse, Multi-Topic-Vergleich (2-Panel-Chart) |
+| `notebooks/04_Analyse.ipynb` | 3 Forschungsfragen: Korrelation (n=30), Kategorie-Analyse, Zeitliche Muster |
 
 > **Tipp:** Notebook 02 muss vor 04 laufen, damit `data/reddit_clean.csv` existiert.
+
+---
+
+## Standalone-Scripts
+
+Für Datenerhebung ohne Jupyter gibt es zwei direkt ausführbare Scripts:
+
+### `run_bulk.py` — Schnelle Bulk-Analyse (empfohlen als Einstieg)
+
+Analysiert 30 Märkte mit Twitter-RoBERTa, ohne Kommentare (ca. 5–10 Min.).
+Schreibt `data/correlation_pairs_bulk.csv` und `data/posts_per_market.csv`.
+
+```bash
+.venv/Scripts/python.exe run_bulk.py        # Windows
+python run_bulk.py                          # macOS / Linux
+```
+
+### `run_analysis.py` — Detailanalyse mit semantischer Filterung
+
+Analysiert 20 Märkte mit Kommentaren und semantischem Post-Filter (ca. 15–30 Min.).
+Schreibt `data/correlation_pairs.csv`.
+
+```bash
+.venv/Scripts/python.exe run_analysis.py   # Windows
+python run_analysis.py                     # macOS / Linux
+```
 
 ---
 
@@ -108,36 +129,41 @@ python -m streamlit run app.py --server.headless=true
 ```
 polymarket-reddit-sentiment/
 ├── app.py                    # Streamlit-Dashboard
+├── run_bulk.py               # Bulk-Script: 30 Märkte, RoBERTa, schnell
+├── run_analysis.py           # Detail-Script: 20 Märkte, Kommentare, Semantic Filter
 ├── requirements.txt          # Abhängigkeiten
 ├── src/
-│   ├── reddit.py             # Reddit JSON API (kein Account nötig)
-│   ├── polymarket.py         # Polymarket API mit Fallback
-│   └── sentiment.py          # VADER / FinBERT / RoBERTa
+│   ├── reddit.py             # Reddit-Fetch (JSON-API + PRAW), Kommentare, Semantic Filter
+│   ├── polymarket.py         # Polymarket API mit robustem Fallback
+│   └── sentiment.py          # VADER / FinBERT / RoBERTa + semantic_filter()
 ├── notebooks/
-│   ├── 01_EDA.ipynb
+│   ├── 01_EDA.ipynb          # EDA mit annotierten Histogrammen
 │   ├── 02_Datenbereinigung.ipynb
-│   ├── 03_Pipeline.ipynb
-│   └── 04_Analyse.ipynb
-└── data/                     # Wird automatisch erstellt (in .gitignore)
+│   ├── 03_Pipeline.ipynb     # 2-Panel-Themenvergleich
+│   └── 04_Analyse.ipynb      # Kategorie-Korrelation, Zeitreihe nach Kategorie
+└── data/                     # Wird zur Laufzeit erstellt (in .gitignore)
+    ├── reddit_raw.csv
     ├── reddit_clean.csv
     ├── polymarket_clean.csv
-    └── correlation_pairs.csv
+    ├── correlation_pairs.csv         # run_analysis.py Output
+    ├── correlation_pairs_bulk.csv    # run_bulk.py Output (n=30, RoBERTa)
+    └── posts_per_market.csv          # run_bulk.py Output (Einzelposts)
 ```
 
 ---
 
 ## Sentiment-Modell wechseln
 
-In `notebooks/04_Analyse.ipynb` → cell-5:
+In `notebooks/04_Analyse.ipynb` → Cell 6 oder direkt in den Scripts:
 
 ```python
 # Schnell (kein Download, VADER):
 SENTIMENT_MODEL = sentiment.MODEL_VADER
 
-# Finanztexte (~440 MB, benötigt transformers):
+# Finanztexte (~440 MB, einmalig):
 SENTIMENT_MODEL = sentiment.MODEL_FINBERT
 
-# Social Media (~500 MB, benötigt transformers):
+# Social Media / Reddit (~500 MB, einmalig) — Standard:
 SENTIMENT_MODEL = sentiment.MODEL_ROBERTA
 ```
 
@@ -145,6 +171,8 @@ SENTIMENT_MODEL = sentiment.MODEL_ROBERTA
 
 ## Bekannte Einschränkungen
 
-- **Polymarket API** ist von diesem Netz ggf. nicht erreichbar → Demo-Datensatz (40 Märkte) wird automatisch als Fallback verwendet
-- **Reddit Rate Limit:** Bei 40 Märkten × 50 Posts ca. 2–5 Minuten Laufzeit (VADER) bzw. 15–30 Min (FinBERT)
+- **Polymarket API** ist von manchen Netzen nicht erreichbar → Demo-Datensatz (30 Märkte) wird automatisch als Fallback verwendet
+- **Reddit Rate Limit:** Bei 30 Märkten × 25 Posts ca. 5–10 Min. Laufzeit (RoBERTa)
+- **sentence-transformers** (`all-MiniLM-L6-v2`, ~80 MB) wird beim ersten `semantic_filter()`-Aufruf heruntergeladen
 - **Plotly** rendert in VS Code Jupyter ohne Interactive-Widgets-Extension nicht → Notebooks nutzen Matplotlib
+- **Kategorie-Daten:** Die Live-Polymarket-API liefert keine Kategorien zurück – Kategorien werden per Keyword-Matching aus dem Fragentext abgeleitet
