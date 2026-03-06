@@ -25,6 +25,23 @@ SLEEP_BETWEEN    = 1.5            # s zwischen Märkten
 SUBREDDITS = ["politics", "worldnews", "stocks", "investing", "news",
               "Economics", "geopolitics"]
 
+NEGATIVE_QUESTION_WORDS = {
+    "recession", "shutdown", "impeach", "invade", "invasion",
+    "nuclear", "ban", "crash", "default", "hurricane", "attack",
+    "sanction", "collapse", "convict", "indict", "conflict",
+    "crisis", "fail", "war",
+}
+
+def question_polarity(question: str) -> int:
+    """Returns +1 for positive-framed questions, -1 for negative-framed.
+
+    Negative-framed: positive Reddit sentiment means the bad outcome is
+    *unlikely*, so we flip the sign before correlating with probability.
+    """
+    words = set(re.findall(r'[a-z]+', question.lower()))
+    return -1 if words & NEGATIVE_QUESTION_WORDS else +1
+
+
 STOPWORDS = {
     "will", "would", "could", "should", "has", "have", "been", "the",
     "and", "are", "for", "was", "not", "with", "this", "that", "from",
@@ -131,11 +148,15 @@ def main():
             w      = np.log1p(scored["score"].clip(lower=0).fillna(0).values)
             wtd_s  = np.average(scored["compound"].values, weights=w) if w.sum() > 0 else mean_s
 
+            polarity = question_polarity(question)
             pairs.append({
                 "question":          question,
                 "probability":       prob,
                 "mean_compound":     mean_s,
                 "weighted_compound": wtd_s,
+                "adjusted_compound": mean_s * polarity,
+                "adjusted_weighted": wtd_s  * polarity,
+                "polarity":          polarity,
                 "n_posts":           len(scored),
                 "n_comments":        0,
                 "n_total":           len(scored),
