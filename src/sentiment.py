@@ -24,6 +24,7 @@ _TRANSFORMER_IDS = {
 
 _vader    = SentimentIntensityAnalyzer()
 _pipe_cache: dict = {}   # lazy: Modell nur beim ersten Aufruf laden
+_st_model = None          # sentence-transformers Modell (lazy)
 
 
 # ── interne Hilfsfunktionen ───────────────────────────────────────────────────
@@ -75,6 +76,61 @@ def _transformer_scores(texts: list[str], model: str, batch_size: int = 16) -> l
         except Exception:
             scores.extend([0.0] * len(batch))
     return scores
+
+
+# ── Semantische Filterung ─────────────────────────────────────────────────────
+
+def semantic_filter(
+    posts: pd.DataFrame,
+    query: str,
+    threshold: float = 0.20,
+) -> pd.DataFrame:
+    """Filtert Posts nach semantischer Ähnlichkeit zur Markt-Frage.
+
+    Verwendet sentence-transformers ('all-MiniLM-L6-v2', ~80 MB).
+    Posts mit cosine-Ähnlichkeit < threshold werden verworfen.
+
+    Parameters
+    ----------
+    posts     : DataFrame mit Spalten 'title' und/oder 'text'
+    query     : vollständige Markt-Frage (z.B. "Will Bitcoin reach $150k?")
+    threshold : Mindestsimilarität [0..1], Standard 0.20
+
+    Returns
+    -------
+    Gefilterter DataFrame, absteigend nach 'semantic_score' sortiert.
+    Gibt ungefilterten DataFrame zurück falls sentence-transformers fehlt.
+    """
+    if posts.empty:
+        return posts
+
+    global _st_model
+    try:
+        from sentence_transformers import SentenceTransformer, util
+    except ImportError:
+        print("[semantic_filter] sentence-transformers nicht installiert – kein Filter.")
+        return posts
+
+    if _st_model is None:
+        print("[semantic_filter] Lade 'all-MiniLM-L6-v2' (~80 MB, einmalig) ...")
+        _st_model = SentenceTransformer("all-MiniLM-L6-v2")
+        print("[semantic_filter] Modell geladen.")
+
+    titles = posts.get("title", pd.Series([""] * len(posts))).fillna("")
+    texts  = posts.get("text",  pd.Series([""] * len(posts))).fillna("")
+    combined = (titles + " " + texts).str.strip().tolist()
+
+    q_emb = _st_model.encode(query,    convert_to_tensor=True)
+    t_emb = _st_model.encode(combined, convert_to_tensor=True, show_progress_bar=False)
+    scores = util.cos_sim(q_emb, t_emb)[0].cpu().numpy()
+
+    mask = scores >= threshold
+    result = posts[mask].copy()
+    result["semantic_score"] = scores[mask]
+    result = result.sort_values("semantic_score", ascending=False).reset_index(drop=True)
+
+    print(f"  [semantic] {mask.sum()}/{len(posts)} Posts relevant (threshold={threshold})")
+    return result
 
 
 # ── öffentliche API ───────────────────────────────────────────────────────────
