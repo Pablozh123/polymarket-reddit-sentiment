@@ -25,3 +25,9 @@ notebooks/*.png
 
 # macOS
 .DS_Store
+
+# Claude Code Konfiguration (persönlich, nicht committen)
+.claude/
+
+# Kursabgaben / PDFs
+*.pdf

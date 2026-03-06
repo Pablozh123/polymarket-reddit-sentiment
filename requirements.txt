@@ -15,9 +15,16 @@ plotly>=5.20.0
 # Umgebung
 python-dotenv>=1.0.1
 
+# Reddit API (authentifiziert, höhere Rate Limits)
+praw>=7.7.0
+
 # Jupyter
 ipykernel>=6.29.0
 notebook>=7.0.0
 
-# Optional: Transformer-Modelle (FinBERT / Twitter-RoBERTa) – ~500 MB
-# pip install transformers torch
+# Transformer-Modelle (FinBERT / Twitter-RoBERTa) – ~500 MB
+transformers>=4.40.0
+torch>=2.0.0
+
+# Semantische Post-Filterung (all-MiniLM-L6-v2) – ~80 MB
+sentence-transformers>=2.7.0
