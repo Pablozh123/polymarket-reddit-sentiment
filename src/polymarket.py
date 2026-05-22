@@ -116,13 +116,14 @@ def get_markets(limit: int = 50, active_only: bool = True) -> pd.DataFrame:
 
 # ── Historische Preise ────────────────────────────────────────────────────────
 
-def get_price_history(condition_id: str, days: int = 30) -> pd.DataFrame:
+def get_price_history(clob_token_id: str, days: int = 30) -> pd.DataFrame:
     """Historische Tagespreise eines Marktes vom Polymarket CLOB API.
 
     Parameters
     ----------
-    condition_id : Polymarket conditionId (aus get_markets()["id"])
-    days         : Anzahl vergangener Tage (Standard: 30)
+    clob_token_id : Polymarket CLOB token/asset id (aus get_markets()["clob_token_id"]).
+                    Die CLOB prices-history API erwartet die Asset ID, nicht die conditionId.
+    days          : Anzahl vergangener Tage (Standard: 30)
 
     Returns
     -------
@@ -134,9 +135,10 @@ def get_price_history(condition_id: str, days: int = 30) -> pd.DataFrame:
 
     url    = "https://clob.polymarket.com/prices-history"
     params = {
-        "market":   condition_id,
+        "market":   clob_token_id,
         "startTs":  start_ts,
         "endTs":    end_ts,
+        "interval": "1d",
         "fidelity": 100,
     }
 

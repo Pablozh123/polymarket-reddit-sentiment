@@ -11,9 +11,11 @@ vaderSentiment>=3.3.2
 # Visualisierung
 matplotlib>=3.8.0
 plotly>=5.20.0
+markdown>=3.5.0
 
 # Umgebung
 python-dotenv>=1.0.1
+dnspython>=2.6.1
 
 # Reddit API (authentifiziert, höhere Rate Limits)
 praw>=7.7.0

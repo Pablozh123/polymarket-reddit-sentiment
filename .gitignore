@@ -31,3 +31,4 @@ notebooks/*.png
 
 # Kursabgaben / PDFs
 *.pdf
+!reports/FINAL_REPORT.pdf

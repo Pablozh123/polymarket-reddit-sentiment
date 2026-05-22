@@ -1,0 +1,1040 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Polymarket Reddit Sentiment - Projektbericht</title>
+<style>
+:root { color-scheme: light; }
+body { font-family: Arial, Helvetica, sans-serif; line-height: 1.55; color: #111827; max-width: 980px; margin: 40px auto; padding: 0 28px; }
+h1 { font-size: 32px; margin-bottom: 10px; }
+h2 { font-size: 23px; margin-top: 36px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; }
+h3 { font-size: 18px; margin-top: 24px; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0 24px; font-size: 14px; }
+th, td { border: 1px solid #d1d5db; padding: 8px 10px; vertical-align: top; }
+th { background: #f3f4f6; text-align: left; }
+img { max-width: 100%; display: block; margin: 18px auto 26px; border: 1px solid #e5e7eb; }
+code { background: #f3f4f6; padding: 1px 4px; border-radius: 4px; }
+pre { background: #111827; color: #f9fafb; padding: 14px 16px; overflow-x: auto; border-radius: 6px; }
+a { color: #1d4ed8; }
+@media print { body { margin: 18mm auto; } h2 { break-after: avoid; } img, table, pre { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<p>﻿# Polymarket Reddit Sentiment</p>
+<p><strong>Projektbericht für Data Wrangling &amp; Engineering FS26</strong><br />
+<strong>Autoren:</strong> Pablo Cruz und Daliah Beck<br />
+<strong>Finaler Live-Run:</strong> 22.05.2026, 12:29 UTC<br />
+<strong>Datengrundlage:</strong> 29 Polymarket-Märkte, 725 Reddit-Posts, 7 Subreddits, keine Demo-Fallback-Daten</p>
+<h2 id="management-summary">Management Summary</h2>
+<p>Dieses Projekt untersucht explorativ, ob die Stimmung in Reddit-Diskussionen mit den aktuellen Wahrscheinlichkeiten von Polymarket-Vorhersagemärkten zusammenhängt. Dafür werden aktive Polymarket-Märkte per API geladen, aus den Marktfragen Reddit-Suchbegriffe abgeleitet, passende Posts gesammelt, mit Twitter-RoBERTa klassifiziert und pro Markt zu Sentiment-Scores aggregiert. Zusätzlich wird mit einem Zero-Shot-NLI-Modell ein Stance-Score berechnet, der direkter misst, ob Reddit-Posts das Eintreten eines Ereignisses unterstützen.</p>
+<p>Das wichtigste Ergebnis ist methodisch sauber, aber inhaltlich vorsichtig zu interpretieren: Im finalen Live-Datensatz zeigt sich <strong>kein statistisch signifikanter linearer Zusammenhang</strong> zwischen Reddit-Sentiment und Polymarket-Wahrscheinlichkeiten. Die Hauptrangkorrelation ist ebenfalls nicht signifikant. Die Richtung der Signale stimmt in <strong>13 von 29 Märkten (44.8%)</strong> überein. Nach der verbesserten, spezifischeren Reddit-Query ist dieser Richtungswert deutlich konservativer als in der früheren Version. Das ist inhaltlich plausibel: Die neue Suche reduziert einige zufällige breite Treffer, zeigt aber auch klarer, dass Reddit-Sentiment allein keine robuste Prognose für Polymarket-Preise liefert.</p>
+<p>Aus Sicht des Data Wrangling ist das Projekt relevant, weil es mehrere praktische Arbeitsschritte verbindet: API-Datenbeschaffung, Textdaten-Wrangling, Datenqualitätsprüfung, Harmonisierung heterogener Datenquellen, NLP-Transformationen, statistische Analyse, Visualisierung und reproduzierbare Pipeline-Ausführung.</p>
+<h2 id="1-konzept-fragestellung-und-datenauswahl">1. Konzept, Fragestellung und Datenauswahl</h2>
+<p>Prediction Markets wie Polymarket bilden Markterwartungen als Preise zwischen 0 und 1 ab. Ein Preis von 0.50 entspricht grob einer vom Markt implizierten Wahrscheinlichkeit von 50%. Reddit enthält parallel dazu öffentliche Diskussionen, Nachrichtenreaktionen und subjektive Einschätzungen zu denselben Themen. Die zentrale Projektidee ist, diese beiden sehr unterschiedlichen Datenquellen zu verbinden und zu prüfen, ob sie ähnliche Signale liefern.</p>
+<h3 id="forschungsfragen">Forschungsfragen</h3>
+<ol>
+<li><strong>F1:</strong> Korrelieren Reddit-Sentiment-Scores mit Polymarket-Wahrscheinlichkeiten?</li>
+<li><strong>F1b:</strong> Unterscheidet sich diese Korrelation nach Marktkategorie?</li>
+<li><strong>F2:</strong> Unterscheidet sich das Sentiment signifikant zwischen Subreddits?</li>
+<li><strong>F3:</strong> Gibt es zeitliche Muster im Reddit-Sentiment?</li>
+<li><strong>F4:</strong> Korreliert ein Stance-Score stärker mit Polymarket-Wahrscheinlichkeiten als reines Sentiment?</li>
+</ol>
+<h3 id="finale-stichprobe">Finale Stichprobe</h3>
+<table>
+<thead>
+<tr>
+<th>Kennzahl</th>
+<th style="text-align: right;">Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Polymarket-Märkte</td>
+<td style="text-align: right;">29</td>
+</tr>
+<tr>
+<td>Reddit-Post-Zeilen</td>
+<td style="text-align: right;">725</td>
+</tr>
+<tr>
+<td>Subreddits</td>
+<td style="text-align: right;">7</td>
+</tr>
+<tr>
+<td>Demo-Fallback-Märkte</td>
+<td style="text-align: right;">0</td>
+</tr>
+<tr>
+<td>Durchschnitt Posts pro Markt</td>
+<td style="text-align: right;">25.0</td>
+</tr>
+<tr>
+<td>Median Posts pro Markt</td>
+<td style="text-align: right;">25</td>
+</tr>
+<tr>
+<td>Sentiment-Modell</td>
+<td style="text-align: right;">Twitter-RoBERTa</td>
+</tr>
+<tr>
+<td>Stance-Modell</td>
+<td style="text-align: right;">DeBERTa-v3 Zero-Shot NLI</td>
+</tr>
+</tbody>
+</table>
+<p>Die Live-Polymarket-API lieferte 100 aktive Märkte; daraus wurden 30 relevante Märkte für den Bulk-Run ausgewählt. Ein Markt wurde ausgeschlossen, weil die Reddit-Suche keine ausreichenden Posts fand. Der finale Datensatz enthält daher 29 auswertbare Märkte. Das liegt innerhalb der geplanten Akzeptanzspanne von 25 bis 30 Märkten.</p>
+<h3 id="marktkategorien">Marktkategorien</h3>
+<table>
+<thead>
+<tr>
+<th>Kategorie</th>
+<th style="text-align: right;">Märkte</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sports</td>
+<td style="text-align: right;">15</td>
+</tr>
+<tr>
+<td>Legal</td>
+<td style="text-align: right;">5</td>
+</tr>
+<tr>
+<td>Entertainment</td>
+<td style="text-align: right;">4</td>
+</tr>
+<tr>
+<td>Geopolitics</td>
+<td style="text-align: right;">2</td>
+</tr>
+<tr>
+<td>Politics</td>
+<td style="text-align: right;">1</td>
+</tr>
+<tr>
+<td>Crypto</td>
+<td style="text-align: right;">1</td>
+</tr>
+<tr>
+<td>Other</td>
+<td style="text-align: right;">1</td>
+</tr>
+</tbody>
+</table>
+<p>Die aktuelle Polymarket-Live-Auswahl war stark von Sport-, Legal- und Entertainment-Märkten geprägt. Das ist ein wichtiger Befund zur Datenauswahl: Die API liefert nicht automatisch eine fachlich balancierte Stichprobe. Deshalb wird die Marktkategorie im Projekt bewusst dokumentiert und nicht nachträglich versteckt.</p>
+<h2 id="2-datenbeschaffung-und-pipeline">2. Datenbeschaffung und Pipeline</h2>
+<p><img alt="Pipeline" src="figures/pipeline_diagram.png" /></p>
+<p>Die Pipeline folgt einem ETL-Muster:</p>
+<ol>
+<li><strong>Extract:</strong> Aktive Polymarket-Märkte werden über Gamma/CLOB geladen. Für jede Marktfrage werden Suchbegriffe extrahiert. Reddit-Posts werden über PRAW, falls Credentials vorhanden sind, sonst über die Public JSON API gesammelt.</li>
+<li><strong>Transform:</strong> Polymarket-JSON und Reddit-JSON werden in DataFrames harmonisiert. Reddit-Titel und Text werden zu <code>text_for_sentiment</code> kombiniert. Pro Post werden Sentiment und Stance berechnet.</li>
+<li><strong>Load:</strong> Zwei zentrale CSVs werden gespeichert: <code>data/correlation_pairs_bulk.csv</code> auf Marktebene und <code>data/posts_per_market.csv</code> auf Postebene.</li>
+</ol>
+<p>Die wichtigsten technischen Metadaten werden explizit gespeichert: <code>api_source</code>, <code>is_demo_market</code>, <code>collected_at_utc</code>, <code>market_id</code>, <code>clob_token_id</code>, <code>market_url</code>, <code>reddit_query</code>, <code>sentiment_model</code> und Postzählungen. Dadurch kann der Run im Bericht nachvollzogen werden, ohne den Code lesen zu müssen.</p>
+<h3 id="reddit-suche-per-keyword-extraktion">Reddit-Suche per Keyword-Extraktion</h3>
+<p>Die Reddit-Suche beginnt nicht mit einer frei erfundenen Query, sondern mit der Polymarket-Frage. Die Query soll aber nicht die komplette Marktfrage exakt nachbilden. Das wäre bei Reddit oft zu eng, weil Reddit-Posts selten die Polymarket-Formulierung wortgleich verwenden. Deshalb erzeugt <code>src/market_metadata.py</code> eine kompakte, recall-orientierte Suchanfrage:</p>
+<ol>
+<li>Zuerst werden Marktfragen normalisiert und in Tokens zerlegt.</li>
+<li>Inhaltlich schwache Fragewörter und Konnektoren wie <code>will</code>, <code>would</code>, <code>before</code>, <code>after</code>, <code>the</code>, <code>of</code> oder <code>by</code> werden entfernt.</li>
+<li>Zahlen, Jahre und Betragsangaben bleiben erhalten, weil sie oft entscheidenden Kontext tragen, zum Beispiel <code>2026</code>, <code>30</code>, <code>1m</code> oder <code>150000</code>.</li>
+<li>Kurze, aber inhaltlich wichtige Tokens wie <code>AI</code>, <code>GTA</code>, <code>VI</code>, <code>US</code>, <code>NHL</code>, <code>NBA</code>, <code>FIFA</code>, <code>win</code>, <code>Cup</code>, <code>New</code> oder <code>San</code> bleiben ebenfalls erhalten.</li>
+<li>Bei Polymarket-Fragen der Form <code>X before GTA VI</code> wird <code>before GTA VI</code> entfernt, falls der Markt nicht selbst über GTA VI handelt. Grund: <code>before GTA VI</code> ist ein Markt-Auflösungsbenchmark, aber Reddit-Posts über Trump, Taiwan oder Bitcoin enthalten diese Vergleichsformulierung fast nie. Würde man sie in der Reddit-Suche behalten, würden viele thematisch passende Posts gar nicht gefunden.</li>
+</ol>
+<p>Damit ist die Query bewusst ein Kompromiss: breit genug, um relevante Reddit-Diskussionen zu finden, aber spezifisch genug, um die wichtigsten Entitäten, Jahreszahlen und Ereignisbegriffe zu behalten. Die eigentliche Marktfrage bleibt in den CSVs erhalten; die Query ist nur der Suchschlüssel für Reddit.</p>
+<p>Beispiele aus dem finalen Run:</p>
+<table>
+<thead>
+<tr>
+<th>Polymarket-Frage</th>
+<th>Reddit-Query</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Trump out as President before GTA VI?</code></td>
+<td><code>Trump out President</code></td>
+</tr>
+<tr>
+<td><code>Will China invades Taiwan before GTA VI?</code></td>
+<td><code>China invades Taiwan</code></td>
+</tr>
+<tr>
+<td><code>Will bitcoin hit $1m before GTA VI?</code></td>
+<td><code>bitcoin hit 1m</code></td>
+</tr>
+<tr>
+<td><code>GTA VI released before June 2026?</code></td>
+<td><code>GTA VI released June 2026</code></td>
+</tr>
+<tr>
+<td><code>Will Iran win the 2026 FIFA World Cup?</code></td>
+<td><code>Iran win 2026 FIFA World Cup</code></td>
+</tr>
+<tr>
+<td><code>Will Harvey Weinstein be sentenced to no prison time?</code></td>
+<td><code>Harvey Weinstein sentenced no prison time</code></td>
+</tr>
+</tbody>
+</table>
+<p>Diese Query wird in mehreren Subreddits gesucht: <code>politics</code>, <code>worldnews</code>, <code>stocks</code>, <code>investing</code>, <code>news</code>, <code>Economics</code> und <code>geopolitics</code>. Pro Markt wurden im finalen Bulk-Run bis zu 25 Posts gesucht. Gespeichert werden unter anderem Reddit-ID, Titel, Text, Subreddit, Score, Kommentarzahl, Zeitstempel und URL. Dadurch ist später sichtbar, welcher Reddit-Text zu welchem Markt gehört.</p>
+<h3 id="posts-kommentare-und-zwei-ausfuhrungsmodi">Posts, Kommentare und zwei Ausführungsmodi</h3>
+<p>Das Projekt hat zwei Modi:</p>
+<table>
+<thead>
+<tr>
+<th>Modus</th>
+<th>Script</th>
+<th>Zweck</th>
+<th>Kommentare</th>
+<th>Semantischer Filter</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bulk-Run</td>
+<td><code>run_bulk.py</code></td>
+<td>finaler Hauptdatensatz, schnell und stabil</td>
+<td>nein</td>
+<td>nein</td>
+</tr>
+<tr>
+<td>Detail-Run</td>
+<td><code>run_analysis.py</code></td>
+<td>tiefere Analyse mit mehr Kontext</td>
+<td>ja, bis <code>COMMENT_LIMIT</code></td>
+<td>ja</td>
+</tr>
+</tbody>
+</table>
+<p>Kommentare sind technisch implementiert: Mit PRAW werden Kommentare direkt über die Submission geladen; im Public-JSON-Fallback werden sie über <code>/comments/{post_id}.json</code> geholt. Gelöschte oder sehr kurze Kommentare werden verworfen. Für den finalen Bericht wurde der Bulk-Run verwendet, weil er reproduzierbarer und schneller ist und genügend Posts pro Markt liefert. Kommentare bleiben als Erweiterung für eine tiefere Folgeanalyse vorhanden.</p>
+<h3 id="semantische-relevanzfilterung">Semantische Relevanzfilterung</h3>
+<p>Die Keyword-Suche findet passende, aber nicht perfekte Treffer. Deshalb enthält das Projekt zusätzlich einen semantischen Filter mit <code>sentence-transformers</code>. Die Idee ist:</p>
+<ol>
+<li>Marktfrage und Reddit-Text werden mit <code>all-MiniLM-L6-v2</code> in Embeddings umgewandelt.</li>
+<li>Für jeden Post wird die Cosine Similarity zur Marktfrage berechnet.</li>
+<li>Posts mit <code>semantic_score &lt; 0.20</code> werden im Detail-Run verworfen.</li>
+<li>Die verbleibenden Posts werden nach <code>semantic_score</code> sortiert.</li>
+</ol>
+<p>Einfach gesagt: Der Filter prüft nicht nur, ob dasselbe Keyword vorkommt, sondern ob der Inhalt semantisch zur Marktfrage passt. Im finalen Bulk-Run wurde dieser Filter bewusst nicht aktiviert, weil er die Laufzeit stark erhöht und bei manchen Märkten zu wenige Posts übrig lassen kann. Im Bericht wird das transparent als <code>semantic_threshold</code> dokumentiert; im Bulk-Run ist diese Spalte leer.</p>
+<h3 id="relevanz-audit-der-reddit-treffer">Relevanz-Audit der Reddit-Treffer</h3>
+<p>Die grösste methodische Schwäche der Datenerhebung ist nicht das Sentiment-Modell, sondern die Trefferqualität der Reddit-Suche. Eine Keyword-Suche kann Posts finden, die einzelne Suchwörter enthalten, aber inhaltlich nicht zur Marktfrage passen. Deshalb wurde zusätzlich ein kleines Relevanz-Audit durchgeführt.</p>
+<p>Aus <code>data/posts_per_market.csv</code> wurden 50 Reddit-Treffer reproduzierbar gezogen (<code>random_state=26</code>) und anhand der Marktfrage codiert:</p>
+<p><img alt="Relevanz-Audit" src="figures/relevance_audit.png" /></p>
+<table>
+<thead>
+<tr>
+<th>Kategorie</th>
+<th style="text-align: right;">Anzahl</th>
+<th style="text-align: right;">Anteil</th>
+<th>Bedeutung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>relevant</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0.0%</td>
+<td>Post passt direkt zur Marktfrage.</td>
+</tr>
+<tr>
+<td>teilweise relevant</td>
+<td style="text-align: right;">13</td>
+<td style="text-align: right;">26.0%</td>
+<td>Post passt zum Thema, aber nicht genau zur Frage.</td>
+</tr>
+<tr>
+<td>irrelevant</td>
+<td style="text-align: right;">37</td>
+<td style="text-align: right;">74.0%</td>
+<td>Post enthält Query-Wörter, aber falschen Kontext.</td>
+</tr>
+</tbody>
+</table>
+<p>Dieses Ergebnis ist wichtig für die Interpretation: Der finale Datensatz hat gute technische Struktur, aber die Reddit-Treffer sind inhaltlich deutlich verrauscht. Die Korrelationen dürfen deshalb nicht als zuverlässige Prognosequalität gelesen werden. Der Audit ist in <code>reports/relevance_audit_sample.csv</code> dokumentiert.</p>
+<p>Zusätzlich wurde für fünf Beispielmärkte geprüft, wie stark ein semantischer Filter mit Schwelle 0.20 die Trefferzahl reduzieren würde. Der finale Bulk-Run bleibt unverändert; der Vergleich dient nur als Qualitätsanalyse.</p>
+<table>
+<thead>
+<tr>
+<th>Marktfrage</th>
+<th style="text-align: right;">Ohne Filter</th>
+<th style="text-align: right;">Mit Filter</th>
+<th style="text-align: right;">Retention</th>
+<th style="text-align: right;">Ø Similarity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trump out as President before GTA VI?</td>
+<td style="text-align: right;">25</td>
+<td style="text-align: right;">19</td>
+<td style="text-align: right;">76.0%</td>
+<td style="text-align: right;">0.236</td>
+</tr>
+<tr>
+<td>Will China invades Taiwan before GTA VI?</td>
+<td style="text-align: right;">25</td>
+<td style="text-align: right;">25</td>
+<td style="text-align: right;">100.0%</td>
+<td style="text-align: right;">0.500</td>
+</tr>
+<tr>
+<td>Will bitcoin hit $1m before GTA VI?</td>
+<td style="text-align: right;">25</td>
+<td style="text-align: right;">24</td>
+<td style="text-align: right;">96.0%</td>
+<td style="text-align: right;">0.302</td>
+</tr>
+<tr>
+<td>Will Harvey Weinstein be sentenced to no prison time?</td>
+<td style="text-align: right;">25</td>
+<td style="text-align: right;">12</td>
+<td style="text-align: right;">48.0%</td>
+<td style="text-align: right;">0.219</td>
+</tr>
+<tr>
+<td>Will the Oklahoma City Thunder win the 2026 NBA Finals?</td>
+<td style="text-align: right;">25</td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">20.0%</td>
+<td style="text-align: right;">0.130</td>
+</tr>
+</tbody>
+</table>
+<p>Der Vergleich zeigt, dass der semantische Filter je nach Markt sehr unterschiedlich wirkt. Bei China/Taiwan bleibt fast alles erhalten, bei Oklahoma City Thunder dagegen nur 20%. Genau das ist ein typisches Text-Wrangling-Problem: Ein strenger Filter verbessert die inhaltliche Passung, kann aber die Fallzahl stark reduzieren.</p>
+<h2 id="3-datenbereinigung-und-qualitatsprufung">3. Datenbereinigung und Qualitätsprüfung</h2>
+<p><img alt="Datenqualität" src="figures/data_quality_summary.png" /></p>
+<h3 id="fehlende-werte">Fehlende Werte</h3>
+<p>Die Polymarket-Wahrscheinlichkeit ist in allen 29 Marktzeilen vorhanden. In den Reddit-Daten fehlen bei 244 von 725 Zeilen die <code>text</code>-Felder. Das ist bei Reddit normal, weil viele Posts reine Link-Posts sind und nur einen Titel besitzen. Diese Fälle wurden nicht gelöscht; für die Sentiment-Analyse wurde <code>text_for_sentiment</code> aus Titel plus Text gebildet. Damit bleibt der verwertbare Inhalt erhalten.</p>
+<p>Die fehlenden Werte wurden nicht nur gezählt, sondern auch typisiert. Dabei steht MCAR für rein zufällig fehlende Werte, MAR für fehlende Werte, die durch beobachtbare Umstände erklärbar sind, und MNAR für fehlende Werte, die vom nicht beobachteten Wert selbst abhängen.</p>
+<table>
+<thead>
+<tr>
+<th>Feld</th>
+<th style="text-align: right;">Fehlend</th>
+<th>Einordnung</th>
+<th>Umgang</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>probability</code></td>
+<td style="text-align: right;">0/29</td>
+<td>kein Missing</td>
+<td>keine Imputation notwendig</td>
+</tr>
+<tr>
+<td><code>text</code></td>
+<td style="text-align: right;">244/725</td>
+<td>strukturell / MAR-nahe, weil Link-Posts oft keinen Body haben</td>
+<td>Body als leerer String, Titel bleibt erhalten</td>
+</tr>
+<tr>
+<td><code>text_for_sentiment</code></td>
+<td style="text-align: right;">0/725</td>
+<td>kein Missing nach Transformation</td>
+<td>Grundlage für Sentiment</td>
+</tr>
+<tr>
+<td><code>category</code></td>
+<td style="text-align: right;">API-seitig teilweise leer</td>
+<td>MAR-nahe, weil API-Metadaten nicht immer gepflegt sind</td>
+<td>Keyword-Taxonomie in <code>src/market_metadata.py</code></td>
+</tr>
+<tr>
+<td><code>stance_score</code></td>
+<td style="text-align: right;">0/29 Märkte, 0/725 Posts</td>
+<td>kein Missing nach Add-on-Schritt</td>
+<td>mit <code>scripts/add_stance_scores.py</code> berechnet</td>
+</tr>
+</tbody>
+</table>
+<p>Eine klassische Imputation wurde bewusst nicht eingesetzt, weil bei Textdaten ein fehlender Body inhaltlich etwas anderes bedeutet als ein zufällig fehlender Zahlenwert. Stattdessen wurde die Textrepräsentation so gebaut, dass vorhandene Titelinformationen erhalten bleiben.</p>
+<h3 id="text-cleaning-und-textreprasentation">Text-Cleaning und Textrepräsentation</h3>
+<p>Reddit-Daten sind im Rohzustand ungleichmässig: Manche Posts bestehen nur aus einem Linktitel, andere haben einen langen Body, wieder andere enthalten Markdown, URLs oder gelöschte Kommentare. Für die Analyse wurde deshalb eine stabile Textspalte gebaut:</p>
+<pre><code class="language-text">text_for_sentiment = title + &quot; &quot; + text
+</code></pre>
+<p>Die wichtigsten Entscheidungen waren:</p>
+<ul>
+<li><strong>Titel und Body werden kombiniert.</strong> Dadurch gehen Link-Posts ohne Body nicht verloren, weil ihr Titel oft die zentrale Information enthält.</li>
+<li><strong>Leere Bodies bleiben erhalten.</strong> Ein fehlender Body wird als leerer String behandelt, nicht als Grund zum Löschen.</li>
+<li><strong>Gelöschte Kommentare werden entfernt.</strong> <code>[deleted]</code> und <code>[removed]</code> werden bei Kommentaren nicht übernommen; sehr kurze Kommentare unter 10 Zeichen werden ebenfalls verworfen.</li>
+<li><strong>URLs und Markdown bleiben weitgehend im Text.</strong> Das ist transparent und reproduzierbar, kann aber einzelne Modell-Scores beeinflussen. Für eine nächste Version könnte man URLs, Markdown-Syntax und HTML-Reste separat normalisieren.</li>
+<li><strong>Keine harte Sprachfilterung.</strong> Die verwendeten Subreddits und Modelle sind primär englischsprachig. Nicht-englische oder gemischte Posts bleiben im Datensatz, werden aber als mögliche Fehlerquelle in der Interpretation berücksichtigt.</li>
+</ul>
+<h3 id="duplikate">Duplikate</h3>
+<p>Auf Ebene <code>(market_id, post_id)</code> gibt es <strong>0 Duplikate</strong>. Es gibt jedoch 321 wiederholte <code>post_id</code>s über verschiedene Märkte hinweg. Das ist plausibel, weil derselbe Reddit-Post zu mehreren ähnlichen Märkten passen kann, etwa bei mehreren Harvey-Weinstein-Sentencing-Märkten, World-Cup-Märkten oder NHL/NBA-Märkten. Für die Marktanalyse ist deshalb die Kombination aus Markt und Post die relevante Eindeutigkeit.</p>
+<h3 id="ausreisser-und-gewichtung">Ausreisser und Gewichtung</h3>
+<p>Reddit-Scores sind rechtsschief: Im finalen Datensatz reicht der Score bis 89553, während das 25%-Quantil bei 3 und das 75%-Quantil bei 184 liegt. Einzelne virale Posts sind deshalb echte Ausreisser im Engagement. Sie wurden nicht gelöscht, weil hohe Sichtbarkeit ein reales Signal sein kann. Stattdessen wird neben dem einfachen Durchschnitt <code>mean_compound</code> auch <code>weighted_compound</code> berechnet, wobei Reddit-Scores mit <code>log1p(score)</code> gewichtet werden. Diese Log-Transformation ist eine robuste Outlier-Strategie: hohe Scores zählen mehr, dominieren aber nicht die gesamte Marktmetrik.</p>
+<h3 id="filter-und-api-status">Filter und API-Status</h3>
+<p>Der finale Bulk-Run verwendet keinen semantischen Filter, sondern eine schnelle, reproduzierbare Keyword-Suche. Der semantische Filter ist im Detail-Run vorbereitet, wurde für den finalen Hauptdatensatz aber nicht aktiviert. Wichtig: <code>api_source = polymarket_live</code> für alle 29 Märkte; es wurden keine Demo-Fallback-Märkte für die Ergebnisse verwendet.</p>
+<h3 id="datenqualitatsmatrix">Datenqualitätsmatrix</h3>
+<p>Die Datenqualität wurde entlang mehrerer Dimensionen geprüft:</p>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Prüfung im Projekt</th>
+<th>Ergebnis</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Vollständigkeit</td>
+<td>Missing Values in Markt- und Postdaten</td>
+<td>keine fehlenden Wahrscheinlichkeiten, kein fehlendes <code>text_for_sentiment</code></td>
+</tr>
+<tr>
+<td>Eindeutigkeit</td>
+<td>Duplikate auf <code>(market_id, post_id)</code></td>
+<td>0 Duplikate</td>
+</tr>
+<tr>
+<td>Plausibilität</td>
+<td><code>probability</code> im Wertebereich [0, 1]</td>
+<td>0.0015 bis 0.7720</td>
+</tr>
+<tr>
+<td>Aktualität</td>
+<td><code>collected_at_utc</code> und Reddit-Zeitstempel</td>
+<td>Run-Zeitpunkt und Post-Zeiten gespeichert</td>
+</tr>
+<tr>
+<td>Herkunft / Provenienz</td>
+<td><code>api_source</code>, <code>market_url</code>, <code>reddit_query</code>, <code>subreddits</code></td>
+<td>Datenherkunft pro Zeile nachvollziehbar</td>
+</tr>
+<tr>
+<td>Konsistenz</td>
+<td>stabile Spalten in Market- und Post-Level CSVs</td>
+<td>im Data Dictionary dokumentiert</td>
+</tr>
+</tbody>
+</table>
+<p>Damit wird nicht nur bereinigt, sondern auch sichtbar gemacht, welche Qualitätsannahmen für die Analyse gelten.</p>
+<h3 id="validierungschecks-vor-abgabe">Validierungschecks vor Abgabe</h3>
+<p>Zusätzlich wurde mit <code>scripts/validate_outputs.py</code> ein reproduzierbarer Check der finalen CSVs erstellt:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th style="text-align: right;">Ergebnis</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mindestens 25 auswertbare Märkte</td>
+<td style="text-align: right;">29</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>Keine Demo-Fallback-Märkte im Hauptergebnis</td>
+<td style="text-align: right;">0</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>Keine fehlenden Polymarket-Wahrscheinlichkeiten</td>
+<td style="text-align: right;">0</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>Wahrscheinlichkeiten im Wertebereich [0, 1]</td>
+<td style="text-align: right;">0.0015 bis 0.7720</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>Keine doppelten Markt-Post-Zeilen</td>
+<td style="text-align: right;">0</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>Keine fehlenden <code>text_for_sentiment</code>-Werte</td>
+<td style="text-align: right;">0</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>Keine fehlenden Markt-Stance-Scores</td>
+<td style="text-align: right;">0</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>Keine fehlenden Post-Stance-Scores</td>
+<td style="text-align: right;">0</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>Reddit-Queries passen zur aktuellen Keyword-Logik</td>
+<td style="text-align: right;">0</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>Semantischer Filter im finalen Bulk-Run</td>
+<td style="text-align: right;">nein</td>
+<td>OK</td>
+</tr>
+</tbody>
+</table>
+<h2 id="4-datentransformation-und-harmonisierung">4. Datentransformation und Harmonisierung</h2>
+<p>Die zentrale Wrangling-Leistung liegt darin, strukturierte Marktdaten und unstrukturierte Reddit-Texte vergleichbar zu machen.</p>
+<h3 id="harmonisierungsschritte">Harmonisierungsschritte</h3>
+<table>
+<thead>
+<tr>
+<th>Schritt</th>
+<th>Polymarket</th>
+<th>Reddit</th>
+<th>Harmonisierung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Einheit</td>
+<td>Marktfrage</td>
+<td>Post</td>
+<td>Marktfrage wird Suchanker</td>
+</tr>
+<tr>
+<td>Format</td>
+<td>JSON/API</td>
+<td>JSON/API</td>
+<td>DataFrames und CSV</td>
+</tr>
+<tr>
+<td>Zeit</td>
+<td>aktueller Marktpreis</td>
+<td>Post-Zeitstempel</td>
+<td>gemeinsamer Run-Zeitpunkt</td>
+</tr>
+<tr>
+<td>Inhalt</td>
+<td>Ereigniswahrscheinlichkeit</td>
+<td>Text/Meinung</td>
+<td>Sentiment und Stance</td>
+</tr>
+<tr>
+<td>Kategorie</td>
+<td>oft leer</td>
+<td>Subreddit</td>
+<td>Keyword-Taxonomie</td>
+</tr>
+</tbody>
+</table>
+<p>Die Harmonisierung wird auf drei Heterogenitätsdimensionen betrachtet:</p>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Problem im Projekt</th>
+<th>Lösung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Syntax</td>
+<td>Polymarket und Reddit liefern verschachteltes JSON; der Bericht braucht Tabellen</td>
+<td>API-JSON wird in pandas DataFrames überführt und als CSV gespeichert</td>
+</tr>
+<tr>
+<td>Struktur</td>
+<td>Polymarket-Einheit ist ein Markt, Reddit-Einheit ist ein Post oder Kommentar</td>
+<td>zwei Zielschemas: <code>correlation_pairs_bulk.csv</code> auf Marktebene und <code>posts_per_market.csv</code> auf Postebene</td>
+</tr>
+<tr>
+<td>Semantik</td>
+<td>Wahrscheinlichkeit, Sentiment und Stance messen unterschiedliche Konzepte</td>
+<td>Data Dictionary, Polarity-Korrektur und Stance Detection machen Bedeutungen explizit</td>
+</tr>
+</tbody>
+</table>
+<p>Die Harmonisierung ist retrospektiv: Die Datenquellen wurden nicht gemeinsam geplant, sondern nachträglich über die Marktfrage, Suchbegriffe und IDs zusammengeführt. Daraus entstehen Trade-offs. Strengere Filter würden die semantische Passung erhöhen, aber Abdeckung verlieren; ein breiterer Filter liefert mehr Posts, kann aber irrelevante Treffer enthalten.</p>
+<h3 id="kategorie-taxonomie">Kategorie-Taxonomie</h3>
+<p>Da Polymarket nicht für alle Märkte verlässliche Kategorien liefert, wurde eine regelbasierte Taxonomie verwendet. Kategorien werden aus der Marktfrage inferiert, etwa Sports, Legal, Geopolitics, Entertainment, Politics und Crypto. Diese Transformation ist transparent im Code und im Data Dictionary dokumentiert.</p>
+<h3 id="von-reddit-text-zu-sentiment-score">Von Reddit-Text zu Sentiment-Score</h3>
+<p>Für die Sentiment-Analyse wird zuerst pro Reddit-Zeile ein auswertbarer Text gebildet:</p>
+<pre><code class="language-text">text_for_sentiment = Titel + &quot; &quot; + Textkörper
+</code></pre>
+<p>Das ist wichtig, weil viele Reddit-Posts nur einen Titel und keinen Body-Text haben. Der fehlende Body wird deshalb nicht als Fehler behandelt, sondern der Titel bleibt als verwertbare Information erhalten.</p>
+<p>Danach klassifiziert <code>cardiffnlp/twitter-roberta-base-sentiment-latest</code> jeden Text als <code>positive</code>, <code>neutral</code> oder <code>negative</code>. Das Modell ist für Social-Media-Sprache geeignet und passt deshalb besser zu Reddit als ein rein finanzspezifisches Modell. Die Implementierung wandelt die Modellantwort in einen numerischen <code>compound</code>-Score um:</p>
+<table>
+<thead>
+<tr>
+<th>Modellentscheidung</th>
+<th style="text-align: right;">Beispielhafte Modell-Konfidenz</th>
+<th style="text-align: right;"><code>compound</code> im Projekt</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>positive</td>
+<td style="text-align: right;">0.82</td>
+<td style="text-align: right;">+0.82</td>
+</tr>
+<tr>
+<td>neutral</td>
+<td style="text-align: right;">0.91</td>
+<td style="text-align: right;">0.00</td>
+</tr>
+<tr>
+<td>negative</td>
+<td style="text-align: right;">0.76</td>
+<td style="text-align: right;">-0.76</td>
+</tr>
+</tbody>
+</table>
+<p>Der Score bedeutet also nicht "Anteil positiver Wörter", sondern: Das Modell erkennt die Gesamtstimmung des Texts und die Konfidenz wird auf eine Skala von -1 bis +1 gebracht. Für Leserinnen und Leser ohne NLP-Vorwissen kann man es so lesen:</p>
+<table>
+<thead>
+<tr>
+<th>Einfaches Beispiel</th>
+<th>Sentiment-Interpretation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"This is great news, the outlook looks strong."</td>
+<td>positiv, hoher positiver Score</td>
+</tr>
+<tr>
+<td>"This outcome is terrible and confidence is collapsing."</td>
+<td>negativ, hoher negativer Score</td>
+</tr>
+<tr>
+<td>"The final starts tomorrow at 8pm."</td>
+<td>neutral, Score nahe 0</td>
+</tr>
+</tbody>
+</table>
+<p>Pro Markt werden die Post-Scores anschliessend aggregiert:</p>
+<ul>
+<li><code>mean_compound</code>: einfacher Durchschnitt aller Sentiment-Scores zu diesem Markt.</li>
+<li><code>weighted_compound</code>: gewichteter Durchschnitt mit <code>log1p(score)</code>, damit Reddit-Posts mit mehr Upvotes etwas stärker zählen, aber einzelne virale Posts nicht alles dominieren.</li>
+</ul>
+<h3 id="warum-vader-finbert-und-twitter-roberta">Warum VADER, FinBERT und Twitter-RoBERTa?</h3>
+<p>Das Projekt unterstützt drei Sentiment-Modelle, weil sie unterschiedliche Stärken haben:</p>
+<table>
+<thead>
+<tr>
+<th>Modell</th>
+<th>Idee</th>
+<th>Vorteil</th>
+<th>Nachteil</th>
+<th>Rolle im Projekt</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>VADER</td>
+<td>lexikon- und regelbasiertes Sentiment</td>
+<td>sehr schnell, transparent, kein Download</td>
+<td>weniger gut bei Kontext, Slang, Ironie und komplexen Sätzen</td>
+<td>Baseline</td>
+</tr>
+<tr>
+<td>FinBERT</td>
+<td>BERT-Modell für Finanztexte</td>
+<td>gut für Unternehmens- und Finanznachrichten</td>
+<td>nicht ideal für Reddit-Slang, Sport-, Legal- und Entertainment-Märkte</td>
+<td>optionaler Vergleich</td>
+</tr>
+<tr>
+<td>Twitter-RoBERTa</td>
+<td>Transformer-Modell für Social-Media-Texte</td>
+<td>passend für kurze, informelle Online-Texte</td>
+<td>langsamer, grösseres Modell</td>
+<td>finaler Standard</td>
+</tr>
+</tbody>
+</table>
+<p>Die Entscheidung für Twitter-RoBERTa ist deshalb inhaltlich begründet: Die Datenquelle ist Reddit, also Social Media. FinBERT wäre naheliegend, wenn der Datensatz hauptsächlich aus Finanznachrichten oder Unternehmensmeldungen bestehen würde. Der finale Live-Datensatz ist aber stark von Sports, Legal und Entertainment geprägt. Ein finanzspezifisches Modell wäre dort nicht automatisch besser.</p>
+<p>Ein echter Modellvergleich wäre nur mit manuell gelabelten Reddit-Posts sauber möglich, weil man dann messen könnte, welches Modell die menschliche Sentiment-Einschätzung am besten trifft. Ohne Goldstandard kann man nur operative Kriterien vergleichen: Plausibilität für die Textdomäne, Laufzeit, Korrelation mit Polymarket und Richtungstrefferquote. Dafür wurde <code>scripts/compare_sentiment_models.py</code> ergänzt.</p>
+<p>Auf dem finalen Datensatz ergibt der leichte Vergleich:</p>
+<p><img alt="Modellvergleich" src="figures/model_comparison.png" /></p>
+<table>
+<thead>
+<tr>
+<th>Modell</th>
+<th style="text-align: right;">Märkte</th>
+<th style="text-align: right;">Pearson r</th>
+<th style="text-align: right;">Spearman rho</th>
+<th style="text-align: right;">Richtungstrefferquote</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>VADER</td>
+<td style="text-align: right;">29</td>
+<td style="text-align: right;">+0.0690</td>
+<td style="text-align: right;">+0.1146</td>
+<td style="text-align: right;">27.6%</td>
+</tr>
+<tr>
+<td>Twitter-RoBERTa</td>
+<td style="text-align: right;">29</td>
+<td style="text-align: right;">+0.0791</td>
+<td style="text-align: right;">+0.1508</td>
+<td style="text-align: right;">44.8%</td>
+</tr>
+</tbody>
+</table>
+<p>Diese Werte beweisen nicht, dass Twitter-RoBERTa allgemein "das beste" Modell ist. Sie zeigen aber, dass VADER im finalen Datensatz als einfache Baseline schwächer zur Marktrichtung passt. Twitter-RoBERTa bleibt deshalb die plausibelste Wahl für den finalen Reddit-Social-Media-Run. FinBERT kann mit <code>python scripts/compare_sentiment_models.py --include-finbert</code> nachgerechnet werden, wurde aber wegen Laufzeit und geringerer Domänenpassung nicht als finaler Standard gesetzt.</p>
+<h3 id="warum-sentiment-allein-nicht-genugt">Warum Sentiment allein nicht genügt</h3>
+<p>Sentiment misst Stimmung, aber nicht automatisch Zustimmung zur Marktfrage. Das ist bei Prediction Markets entscheidend. Beispiel:</p>
+<table>
+<thead>
+<tr>
+<th>Marktfrage</th>
+<th>Reddit-Aussage</th>
+<th style="text-align: right;">Sentiment</th>
+<th>Bedeutung für die Marktfrage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"Will Team X win?"</td>
+<td>"Team X looks unbeatable."</td>
+<td style="text-align: right;">positiv</td>
+<td>spricht eher für "Ja"</td>
+</tr>
+<tr>
+<td>"Will there be a recession?"</td>
+<td>"The economy looks strong, recession fears are fading."</td>
+<td style="text-align: right;">positiv</td>
+<td>spricht eher gegen "Ja"</td>
+</tr>
+</tbody>
+</table>
+<p>Bei negativ gerahmten Fragen wie Rezession, Krieg, Crash oder Verurteilung kann positive Stimmung also bedeuten, dass das negative Ereignis weniger wahrscheinlich wirkt. Deshalb berechnet das Projekt eine <code>polarity</code> pro Marktfrage und daraus <code>adjusted_compound</code> bzw. <code>adjusted_weighted</code>. Bei positiv gerahmten Fragen bleibt das Vorzeichen gleich, bei negativ gerahmten Fragen wird es invertiert.</p>
+<h3 id="stance-detection-zustimmung-statt-stimmung">Stance Detection: Zustimmung statt Stimmung</h3>
+<p>Stance Detection wurde ergänzt, weil sie methodisch näher an Polymarket liegt. Sie fragt nicht "Ist der Text positiv oder negativ?", sondern "Unterstützt der Text die Aussage, dass das Ereignis eintritt?"</p>
+<p>Der Ablauf ist:</p>
+<ol>
+<li>Aus der Marktfrage wird eine Ereignis-Hypothese erzeugt. Aus "Will Team X win the final?" wird sinngemäss "Team X win the final".</li>
+<li>Das Zero-Shot-NLI-Modell <code>MoritzLaurer/deberta-v3-base-zeroshot-v2.0</code> vergleicht den Reddit-Text mit zwei Kandidaten:</li>
+<li>Ereignis wird eintreten.</li>
+<li>Ereignis wird nicht eintreten.</li>
+<li>Der Score wird als Differenz berechnet:</li>
+</ol>
+<pre><code class="language-text">stance_score = P(Ereignis wird eintreten) - P(Ereignis wird nicht eintreten)
+</code></pre>
+<p>Die Interpretation ist:</p>
+<table>
+<thead>
+<tr>
+<th>Beispielhafte NLI-Werte</th>
+<th style="text-align: right;"><code>stance_score</code></th>
+<th>Bedeutung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P(happen)=0.80, P(not happen)=0.10</td>
+<td style="text-align: right;">+0.70</td>
+<td>Text spricht für das Ereignis</td>
+</tr>
+<tr>
+<td>P(happen)=0.15, P(not happen)=0.75</td>
+<td style="text-align: right;">-0.60</td>
+<td>Text spricht gegen das Ereignis</td>
+</tr>
+<tr>
+<td>P(happen)=0.48, P(not happen)=0.45</td>
+<td style="text-align: right;">+0.03</td>
+<td>kaum klare Richtung</td>
+</tr>
+</tbody>
+</table>
+<p>Damit löst Stance ein Problem, das Sentiment nicht sauber lösen kann: Ein positiver Satz wie "Great, no recession is coming" ist positiv im Ton, aber klar gegen die Marktfrage "Will there be a recession?". Stance soll diese Richtung direkter erfassen.</p>
+<h3 id="von-scores-zu-ergebnissen">Von Scores zu Ergebnissen</h3>
+<p>Nach der Transformation liegt pro Markt eine Zeile mit Polymarket-Wahrscheinlichkeit und Reddit-Metriken vor. Die wichtigsten Analysefelder sind:</p>
+<table>
+<thead>
+<tr>
+<th>Feld</th>
+<th>Rolle in der Analyse</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>probability</code></td>
+<td>aktuelle Polymarket-Yes-Wahrscheinlichkeit</td>
+</tr>
+<tr>
+<td><code>weighted_compound</code></td>
+<td>gewichtetes Reddit-Sentiment pro Markt</td>
+</tr>
+<tr>
+<td><code>adjusted_weighted</code></td>
+<td>Sentiment nach Polarity-Korrektur</td>
+</tr>
+<tr>
+<td><code>stance_score</code></td>
+<td>Zustimmung/Ablehnung zum Ereignis</td>
+</tr>
+<tr>
+<td><code>n_total</code></td>
+<td>Anzahl verwendeter Reddit-Posts zum Markt</td>
+</tr>
+</tbody>
+</table>
+<p>Die Korrelationen in F1 und F4 entstehen dann aus diesen Marktzeilen: Pearson misst den linearen Zusammenhang, Spearman den Zusammenhang der Rangordnung. Die Richtungsübereinstimmung ist ein einfacherer Zusatzcheck: Polymarket wird als "Ja-Richtung" gewertet, wenn <code>probability &gt; 0.5</code>; Reddit wird als "Ja-Richtung" gewertet, wenn <code>adjusted_weighted &gt; 0</code>. Stimmen beide Richtungen überein, zählt der Markt als Treffer.</p>
+<h2 id="5-analyse-und-erkenntnisse">5. Analyse und Erkenntnisse</h2>
+<h3 id="f1-korrelation-zwischen-reddit-sentiment-und-polymarket-wahrscheinlichkeit">F1: Korrelation zwischen Reddit-Sentiment und Polymarket-Wahrscheinlichkeit</h3>
+<p><img alt="Korrelation" src="figures/correlation_scatter.png" /></p>
+<table>
+<thead>
+<tr>
+<th>Metrik</th>
+<th style="text-align: right;">Pearson r</th>
+<th style="text-align: right;">p-Wert</th>
+<th style="text-align: right;">Spearman rho</th>
+<th style="text-align: right;">p-Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Weighted Sentiment</td>
+<td style="text-align: right;">+0.0791</td>
+<td style="text-align: right;">0.6833</td>
+<td style="text-align: right;">+0.1508</td>
+<td style="text-align: right;">0.4350</td>
+</tr>
+<tr>
+<td>Adjusted Weighted Sentiment</td>
+<td style="text-align: right;">+0.0791</td>
+<td style="text-align: right;">0.6833</td>
+<td style="text-align: right;">+0.1508</td>
+<td style="text-align: right;">0.4350</td>
+</tr>
+</tbody>
+</table>
+<p>Die lineare Korrelation ist praktisch null und statistisch nicht signifikant. Die Rangkorrelation ist positiv, aber ebenfalls nicht signifikant. Daraus folgt: In diesem Live-Datensatz kann kein belastbarer Zusammenhang zwischen Reddit-Sentiment und Polymarket-Wahrscheinlichkeiten nachgewiesen werden.</p>
+<p>Die Richtungsübereinstimmung ist im aktualisierten Run konservativ: In <strong>13 von 29 Märkten (44.8%)</strong> zeigen Polymarket und Reddit dieselbe grobe Richtung, wenn man Polymarket &gt; 50% und adjusted weighted sentiment &gt; 0 als positive Erwartung interpretiert. Dieser Wert spricht nicht für Prognosekraft. Methodisch ist das trotzdem wertvoll, weil die verbesserte Query nun weniger auf zufällig breite Treffer setzt und die Limitation von reinem Sentiment klarer sichtbar macht.</p>
+<h3 id="f1b-kategorieanalyse">F1b: Kategorieanalyse</h3>
+<p><img alt="Kategorie-Korrelation" src="figures/category_correlation.png" /></p>
+<p>Für Kategorien mit mindestens drei Märkten ergibt sich:</p>
+<table>
+<thead>
+<tr>
+<th>Kategorie</th>
+<th style="text-align: right;">n</th>
+<th style="text-align: right;">Pearson r</th>
+<th style="text-align: right;">p-Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Entertainment</td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">-0.6844</td>
+<td style="text-align: right;">0.3156</td>
+</tr>
+<tr>
+<td>Legal</td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">+0.1279</td>
+<td style="text-align: right;">0.8375</td>
+</tr>
+<tr>
+<td>Sports</td>
+<td style="text-align: right;">15</td>
+<td style="text-align: right;">+0.5002</td>
+<td style="text-align: right;">0.0576</td>
+</tr>
+</tbody>
+</table>
+<p>Die Kategorieanalyse zeigt keine signifikanten Zusammenhänge. Sports liegt mit r = +0.5002 und p = 0.0576 nahe an einem explorativ interessanten Signal, bleibt aber oberhalb der üblichen Signifikanzgrenze. Entertainment und Legal sind wegen sehr kleiner n nicht robust interpretierbar. Die meisten anderen Kategorien sind zu klein für eine separate Korrelationsanalyse.</p>
+<h3 id="f2-unterschiede-zwischen-subreddits">F2: Unterschiede zwischen Subreddits</h3>
+<p><img alt="Subreddit Boxplot" src="figures/subreddit_boxplot.png" /></p>
+<table>
+<thead>
+<tr>
+<th>Subreddit</th>
+<th style="text-align: right;">n</th>
+<th style="text-align: right;">Mittelwert</th>
+<th style="text-align: right;">Median</th>
+<th style="text-align: right;">Positive %</th>
+<th style="text-align: right;">Negative %</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>stocks</td>
+<td style="text-align: right;">277</td>
+<td style="text-align: right;">+0.1624</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: right;">33.6</td>
+<td style="text-align: right;">12.6</td>
+</tr>
+<tr>
+<td>investing</td>
+<td style="text-align: right;">165</td>
+<td style="text-align: right;">+0.1222</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: right;">26.7</td>
+<td style="text-align: right;">10.9</td>
+</tr>
+<tr>
+<td>news</td>
+<td style="text-align: right;">53</td>
+<td style="text-align: right;">+0.0615</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: right;">26.4</td>
+<td style="text-align: right;">18.9</td>
+</tr>
+<tr>
+<td>geopolitics</td>
+<td style="text-align: right;">19</td>
+<td style="text-align: right;">-0.0308</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: right;">0.0</td>
+<td style="text-align: right;">5.3</td>
+</tr>
+<tr>
+<td>worldnews</td>
+<td style="text-align: right;">49</td>
+<td style="text-align: right;">-0.1217</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: right;">6.1</td>
+<td style="text-align: right;">26.5</td>
+</tr>
+<tr>
+<td>politics</td>
+<td style="text-align: right;">155</td>
+<td style="text-align: right;">-0.2342</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: right;">6.5</td>
+<td style="text-align: right;">43.2</td>
+</tr>
+<tr>
+<td>Economics</td>
+<td style="text-align: right;">7</td>
+<td style="text-align: right;">-0.4116</td>
+<td style="text-align: right;">-0.7344</td>
+<td style="text-align: right;">14.3</td>
+<td style="text-align: right;">71.4</td>
+</tr>
+</tbody>
+</table>
+<p>Der Kruskal-Wallis-Test zeigt einen deutlichen Unterschied zwischen Subreddits: <strong>H = 92.05, p = 1.14e-17</strong>. Damit unterscheidet sich die Sentiment-Verteilung zwischen den Subreddits statistisch signifikant. Inhaltlich ist das plausibel: <code>stocks</code> und <code>investing</code> sind im Datensatz positiver, während <code>politics</code>, <code>worldnews</code> und <code>Economics</code> deutlich negativer ausfallen.</p>
+<h3 id="f3-zeitliche-muster">F3: Zeitliche Muster</h3>
+<p><img alt="Zeitreihe" src="figures/sentiment_timeline.png" /></p>
+<p>Die Reddit-Zeitstempel reichen insgesamt von <strong>13.06.2009</strong> bis <strong>22.05.2026</strong> und verteilen sich auf 235 Kalendertage. Für die Visualisierung wurde der Zeitraum jedoch bewusst auf Posts ab <strong>01.01.2025</strong> gekürzt. Dadurch bleiben <strong>566 Posts</strong> auf <strong>144 Kalendertagen</strong> übrig, und die einzelnen Kategorien sind deutlich besser lesbar. Die Grafik zeigt wöchentliche Durchschnittswerte je Kategorie in separaten Panels.</p>
+<p>Die älteren Posts bleiben im Datensatz dokumentiert, werden aber nicht in der Zeitgrafik gezeigt, weil sie die Achse stark auseinanderziehen und die aktuelle Marktphase optisch überdecken. Die Zeitreihe ist weiterhin als Datenexploration zu verstehen: Sie zeigt, wann Reddit-Posts zu den verwendeten Suchbegriffen entstanden sind, aber nicht, ob Reddit dem Markt zeitlich vorausläuft. Für eine robuste Lead-Lag-Analyse müsste die Pipeline täglich Polymarket-Preise und Reddit-Sentiment sammeln.</p>
+<h3 id="f4-stance-detection-vs-sentiment">F4: Stance Detection vs. Sentiment</h3>
+<p><img alt="Stance" src="figures/stance_comparison.png" /></p>
+<table>
+<thead>
+<tr>
+<th>Metrik</th>
+<th style="text-align: right;">Pearson r</th>
+<th style="text-align: right;">p-Wert</th>
+<th style="text-align: right;">Spearman rho</th>
+<th style="text-align: right;">p-Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Stance Score</td>
+<td style="text-align: right;">-0.0855</td>
+<td style="text-align: right;">0.6591</td>
+<td style="text-align: right;">-0.1123</td>
+<td style="text-align: right;">0.5618</td>
+</tr>
+</tbody>
+</table>
+<p>Der Stance-Score korreliert im finalen Datensatz nicht stärker mit Polymarket als das Sentiment. Das ist ein wichtiges Ergebnis, weil Stance methodisch eigentlich näher an der Marktfrage liegt. Die fehlende Signifikanz kann mehrere Ursachen haben: kleine Stichprobe, unscharfe Reddit-Suche, mehrere sehr ähnliche Märkte, breite Marktkategorien und die Tatsache, dass Polymarket-Preise nicht nur Textstimmung, sondern auch Liquidität, Spezialwissen und Marktmechanik abbilden.</p>
+<h2 id="6-visualisierung">6. Visualisierung</h2>
+<p>Die meisten Visualisierungen wurden mit <code>scripts/generate_report_assets.py</code> aus den finalen CSVs erzeugt. Die Audit-Grafik stammt aus <code>scripts/audit_reddit_quality.py</code>. Jede Grafik ist ohne Notebook-Ausführung reproduzierbar.</p>
+<table>
+<thead>
+<tr>
+<th>Grafik</th>
+<th>Zweck</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pipeline_diagram.png</code></td>
+<td>Erklärt die Datenpipeline von API bis Bericht.</td>
+</tr>
+<tr>
+<td><code>data_quality_summary.png</code></td>
+<td>Fasst Stichprobe und Qualitätschecks zusammen.</td>
+</tr>
+<tr>
+<td><code>correlation_scatter.png</code></td>
+<td>Zeigt F1: Sentiment vs. Polymarket.</td>
+</tr>
+<tr>
+<td><code>category_correlation.png</code></td>
+<td>Zeigt F1b: Korrelation nach Kategorie.</td>
+</tr>
+<tr>
+<td><code>model_comparison.png</code></td>
+<td>Vergleicht Sentiment-Modelle als methodische Robustheitsprüfung.</td>
+</tr>
+<tr>
+<td><code>relevance_audit.png</code></td>
+<td>Zeigt die manuell codierte Qualität einer Reddit-Trefferstichprobe.</td>
+</tr>
+<tr>
+<td><code>subreddit_boxplot.png</code></td>
+<td>Zeigt F2: Verteilung nach Subreddit.</td>
+</tr>
+<tr>
+<td><code>sentiment_timeline.png</code></td>
+<td>Zeigt F3: zeitliche Entwicklung.</td>
+</tr>
+<tr>
+<td><code>stance_comparison.png</code></td>
+<td>Zeigt F4: Sentiment vs. Stance.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="7-werkzeugwahl-und-technische-umsetzung">7. Werkzeugwahl und technische Umsetzung</h2>
+<p>Python ist für dieses Projekt passend, weil API-Abfragen, JSON-Verarbeitung, DataFrames, NLP-Modelle, Statistik und Visualisierung in einer reproduzierbaren Pipeline verbunden werden können. Low-Code-Tools wären für diese Kombination weniger geeignet, weil die Logik für Reddit-Suche, Polymarket-Metadaten, Sentiment-Modelle, Stance Detection und Report-Assets zu spezifisch ist.</p>
+<h3 id="eingesetzte-werkzeuge">Eingesetzte Werkzeuge</h3>
+<ul>
+<li><code>requests</code>: API-Zugriffe auf Polymarket und Reddit.</li>
+<li><code>pandas</code> / <code>numpy</code>: Datenstrukturierung, Aggregation und CSV-Export.</li>
+<li><code>scipy</code>: Pearson, Spearman und Kruskal-Wallis.</li>
+<li><code>transformers</code> / <code>torch</code>: Twitter-RoBERTa und DeBERTa-NLI.</li>
+<li><code>matplotlib</code>: reproduzierbare Berichtsgrafiken.</li>
+<li><code>streamlit</code>: exploratives Dashboard als Bonus.</li>
+</ul>
+<h3 id="reproduzierbarer-ablauf">Reproduzierbarer Ablauf</h3>
+<pre><code class="language-bash">python run_bulk.py
+python scripts/add_stance_scores.py
+python scripts/compare_sentiment_models.py
+python scripts/generate_report_assets.py
+python scripts/audit_reddit_quality.py
+python scripts/validate_outputs.py
+python scripts/render_final_report.py
+</code></pre>
+<p>Die finalen Ergebnisse liegen danach in:</p>
+<ul>
+<li><code>data/correlation_pairs_bulk.csv</code></li>
+<li><code>data/posts_per_market.csv</code></li>
+<li><code>reports/report_summary.md</code></li>
+<li><code>reports/reddit_quality_audit.md</code></li>
+<li><code>reports/validation_checks.md</code></li>
+<li><code>reports/figures/*.png</code></li>
+</ul>
+<h2 id="8-limitationen">8. Limitationen</h2>
+<ol>
+<li><strong>Reddit ist nicht repräsentativ.</strong> Reddit-Nutzerinnen und -Nutzer sind keine Zufallsstichprobe.</li>
+<li><strong>Keyword-Suche ist ungenau.</strong> Relevante Posts können fehlen; irrelevante Posts können aufgenommen werden.</li>
+<li><strong>Polymarket ist ein Markt, keine Wahrheit.</strong> Preise enthalten Erwartungen, Liquidität, Risikoappetit und Informationsvorsprünge.</li>
+<li><strong>Snapshot statt Panel.</strong> Es gibt pro Markt nur eine aktuelle Wahrscheinlichkeit, daher keine robuste Lag-Analyse.</li>
+<li><strong>Kategorien sind unausgewogen.</strong> Sports dominiert den Live-Datensatz, andere Kategorien haben zu wenige Märkte.</li>
+<li><strong>Stance Detection ist modellabhängig.</strong> Zero-Shot-NLI ist nützlich, aber nicht perfekt auf Reddit-Slang oder Polymarket-Fragen trainiert.</li>
+<li><strong>Doppelte Posts über Märkte.</strong> Einzelne Posts können mehreren Marktfragen zugeordnet sein. Das ist dokumentiert und für Markt-Post-Kombinationen kontrolliert.</li>
+</ol>
+<h2 id="9-fazit">9. Fazit</h2>
+<p>In diesem Projekt wurden aktive Polymarket-Märkte mit Reddit-Diskussionen verbunden, um zu untersuchen, ob öffentliche Online-Stimmung mit Marktpreisen von Vorhersagemärkten zusammenhängt. Dafür wurden Polymarket-Daten per API geladen, aus den Marktfragen Reddit-Suchanfragen abgeleitet, Posts aus mehreren Subreddits gesammelt und die Texte anschliessend mit Sentiment- und Stance-Modellen ausgewertet. Aus den einzelnen Post-Scores entstand pro Markt ein aggregierter Datensatz, der mit den Polymarket-Wahrscheinlichkeiten verglichen werden konnte.</p>
+<p>Die grösste Schwierigkeit lag in der inhaltlichen Zuordnung zwischen Marktfrage und Reddit-Posts. Eine zu enge Suchanfrage findet kaum Beiträge, eine zu breite Suchanfrage nimmt schnell irrelevante Diskussionen auf. Deshalb wurde die Keyword-Extraktion angepasst: Jahreszahlen, Zahlenwerte und zentrale Entitäten bleiben erhalten, während schwache Fragewörter und reine Markt-Benchmarks wie <code>before GTA VI</code> entfernt werden, wenn sie die Reddit-Suche eher verschlechtern. Trotzdem bleibt diese Zuordnung eine wichtige Limitation, weil Reddit-Posts nicht speziell für Polymarket-Fragen geschrieben werden.</p>
+<p>Die Ergebnisse zeigen keinen statistisch signifikanten Zusammenhang zwischen Reddit-Sentiment und Polymarket-Wahrscheinlichkeiten. Auch der Stance-Score, der direkter misst, ob ein Text das Eintreten eines Ereignisses unterstützt, korreliert im finalen Datensatz nicht stärker mit den Marktpreisen. Das spricht dagegen, Reddit-Stimmung in dieser Form als einfache Prognosequelle zu interpretieren. Plausibel ist, dass Polymarket-Preise nicht nur öffentliche Stimmung widerspiegeln, sondern auch Liquidität, Spezialwissen, Marktmechanik, Nachrichtenlage und Erwartungen einzelner Trader.</p>
+<p>Trotzdem liefert die Analyse verwertbare Erkenntnisse. Die Sentiment-Verteilungen unterscheiden sich deutlich zwischen Subreddits: Finanznahe Subreddits wie <code>stocks</code> und <code>investing</code> sind im Datensatz positiver, während <code>politics</code>, <code>worldnews</code> und <code>Economics</code> negativer ausfallen. Zudem zeigt die Kategorieanalyse, dass einzelne Themenbereiche unterschiedlich reagieren können, auch wenn die Stichprobe für robuste Aussagen noch zu klein ist. Für eine nächste Version wäre vor allem eine tägliche Datensammlung über mehrere Wochen sinnvoll, damit sich echte Zeitverläufe, Marktbewegungen und mögliche Lag-Effekte untersuchen lassen.</p>
+</body>
+</html>

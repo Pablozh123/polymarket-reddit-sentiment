@@ -1,19 +1,19 @@
 """
-Bulk-Analyse: 30 Märkte mit Twitter-RoBERTa (live Polymarket-Daten).
+Bulk-Analyse: bis zu 30 Märkte mit Twitter-RoBERTa (live Polymarket-Daten).
 Speichert:
-  - data/correlation_pairs_bulk.csv   (aggregiert, für Korrelation n=30+)
-  - data/posts_per_market.csv         (Einzelposts mit Datum, für Lag-Analyse)
+  - data/correlation_pairs_bulk.csv   (aggregiert, Hauptkorrelation)
+  - data/posts_per_market.csv         (Einzelposts mit Datum/Subreddit)
 
 Ausführen:
     .venv/Scripts/python.exe run_bulk.py
 """
 
-import sys, os, time, re
+import sys, os, time
 sys.path.insert(0, os.path.dirname(__file__))
 
 import numpy as np
 import pandas as pd
-from src import reddit, polymarket, sentiment
+from src import reddit, polymarket, sentiment, market_metadata
 
 # ── Konfiguration ──────────────────────────────────────────────────────────────
 MAX_MARKETS      = 30
@@ -25,40 +25,6 @@ SLEEP_BETWEEN    = 1.5            # s zwischen Märkten
 
 SUBREDDITS = ["politics", "worldnews", "stocks", "investing", "news",
               "Economics", "geopolitics"]
-
-NEGATIVE_QUESTION_WORDS = {
-    "recession", "shutdown", "impeach", "invade", "invasion",
-    "nuclear", "ban", "crash", "default", "hurricane", "attack",
-    "sanction", "collapse", "convict", "indict", "conflict",
-    "crisis", "fail", "war",
-}
-
-def question_polarity(question: str) -> int:
-    """Returns +1 for positive-framed questions, -1 for negative-framed.
-
-    Negative-framed: positive Reddit sentiment means the bad outcome is
-    *unlikely*, so we flip the sign before correlating with probability.
-    """
-    words = set(re.findall(r'[a-z]+', question.lower()))
-    return -1 if words & NEGATIVE_QUESTION_WORDS else +1
-
-
-STOPWORDS = {
-    "will", "would", "could", "should", "has", "have", "been", "the",
-    "and", "are", "for", "was", "not", "with", "this", "that", "from",
-    "its", "which", "when", "who", "how", "what", "why", "does", "did",
-    "any", "all", "into", "over", "about", "than", "more", "first",
-    "2024", "2025", "2026", "year", "end", "hit", "win", "get", "per",
-}
-
-RELEVANT_KEYWORDS = [
-    "trump", "fed", "rate", "tariff", "recession", "ukraine", "russia",
-    "china", "taiwan", "election", "senate", "congress", "gdp", "inflation",
-    "bitcoin", "crypto", "war", "trade", "stock", "nasdaq", "dollar",
-    "gold", "oil", "iran", "nato", "ceasefire", "president", "democrat",
-    "republican", "economy", "market", "bank", "debt", "deficit",
-    "ethereum", "solana", "nvidia", "tesla", "openai", "regulation",
-]
 
 SAMPLE_DATA = [
     {"question": "Will Trump be impeached in 2025?",               "probability": 0.08, "category": "Politics"},
@@ -94,48 +60,37 @@ SAMPLE_DATA = [
 ]
 
 
-def _filter_relevant(df: pd.DataFrame, n: int) -> pd.DataFrame:
-    """Filtert Märkte nach thematischer Relevanz, wortgenaues Matching."""
-    if df.empty:
-        return df
-    mask = df["question"].str.lower().apply(
-        lambda q: any(kw in set(re.findall(r'[a-z]+', q)) for kw in RELEVANT_KEYWORDS)
-    )
-    relevant = df[mask]
-    if len(relevant) >= n:
-        return relevant.head(n)
-    rest = df[~mask].head(n - len(relevant))
-    return pd.concat([relevant, rest]).head(n)
-
-
-def extract_keywords(question: str, n: int = 4) -> str:
-    words = re.findall(r"[A-Za-z]{4,}", question)
-    kws = [w for w in words if w.lower() not in STOPWORDS]
-    return " ".join(kws[:n]) if kws else question[:50]
-
-
 def main():
+    collected_at_utc = pd.Timestamp.utcnow().isoformat()
     try:
         all_markets = polymarket.get_markets(limit=200)
         if all_markets.empty or "probability" not in all_markets.columns:
             raise ValueError("leere API")
-        markets = _filter_relevant(all_markets, MAX_MARKETS)
+        markets = market_metadata.filter_relevant_markets(all_markets, MAX_MARKETS)
+        market_source = "polymarket_live"
         print(f"Polymarket live: {len(all_markets)} Maerkte gesamt, {len(markets)} relevant")
-    except Exception:
-        print("Polymarket API nicht erreichbar -> Demo-Datensatz")
+    except Exception as exc:
+        print(f"Polymarket API nicht erreichbar -> Demo-Datensatz ({exc})")
         markets = pd.DataFrame(SAMPLE_DATA).head(MAX_MARKETS)
+        market_source = "demo_fallback"
 
     print(f"\nBulk-Analyse: {len(markets)} Maerkte, Modell=RoBERTa, Kommentare=Nein")
     print("-" * 60)
 
-    pairs      = []
-    all_posts  = []
+    pairs = []
+    all_posts = []
 
-    for i, row in markets.iterrows():
-        question = row["question"]
-        prob     = row["probability"]
-        category = row.get("category", "Unknown")
-        keywords = extract_keywords(question)
+    for position, (_, row) in enumerate(markets.iterrows(), start=1):
+        market_fields = market_metadata.stable_market_fields(
+            row=row,
+            position=position,
+            api_source=market_source,
+            collected_at_utc=collected_at_utc,
+        )
+        question = market_fields["question"]
+        prob = market_fields["probability"]
+        category = market_fields["category"]
+        keywords = market_metadata.extract_keywords(question)
 
         try:
             raw = reddit.get_posts(keywords, SUBREDDITS, POSTS_PER_MARKET,
@@ -144,12 +99,13 @@ def main():
                 print(f"  SKIP [{keywords}] keine Posts")
                 continue
 
+            raw_n = len(raw)
             scored = sentiment.analyze(raw, model=SENTIMENT_MODEL)
             mean_s = scored["compound"].mean()
-            w      = np.log1p(scored["score"].clip(lower=0).fillna(0).values)
-            wtd_s  = np.average(scored["compound"].values, weights=w) if w.sum() > 0 else mean_s
+            w = np.log1p(scored["score"].clip(lower=0).fillna(0).values)
+            wtd_s = np.average(scored["compound"].values, weights=w) if w.sum() > 0 else mean_s
 
-            polarity = question_polarity(question)
+            polarity = market_metadata.question_polarity(question)
 
             if INCLUDE_STANCE:
                 hyp = sentiment.question_to_hypothesis(question)
@@ -158,29 +114,57 @@ def main():
                 stance_s = float("nan")
 
             pairs.append({
-                "question":          question,
-                "probability":       prob,
-                "mean_compound":     mean_s,
+                **market_fields,
+                "reddit_query": keywords,
+                "subreddits": ",".join(SUBREDDITS),
+                "sentiment_model": SENTIMENT_MODEL,
+                "semantic_threshold": float("nan"),
+                "mean_compound": mean_s,
                 "weighted_compound": wtd_s,
                 "adjusted_compound": mean_s * polarity,
-                "adjusted_weighted": wtd_s  * polarity,
-                "polarity":          polarity,
-                "stance_score":      stance_s,
-                "n_posts":           len(scored),
-                "n_comments":        0,
-                "n_total":           len(scored),
-                "keywords":          keywords,
-                "category":          category,
-                "model":             "roberta",
+                "adjusted_weighted": wtd_s * polarity,
+                "polarity": polarity,
+                "stance_score": stance_s,
+                "n_posts": len(scored),
+                "n_comments": 0,
+                "n_total": len(scored),
+                "n_raw_posts": raw_n,
+                "n_after_semantic_filter": len(scored),
+                "keywords": keywords,
             })
 
-            # Einzelposts für Lag-Analyse speichern
-            scored["market_question"] = question
-            scored["probability"]     = prob
-            scored["category"]        = category
-            all_posts.append(scored[["market_question", "probability", "category",
-                                      "title", "subreddit", "score", "compound",
-                                      "sentiment_label", "created_utc"]].copy())
+            post_export = scored.rename(columns={"id": "post_id"}).copy()
+            post_export["market_id"] = market_fields["market_id"]
+            post_export["clob_token_id"] = market_fields["clob_token_id"]
+            post_export["market_url"] = market_fields["market_url"]
+            post_export["market_question"] = question
+            post_export["probability"] = prob
+            post_export["category"] = category
+            post_export["api_source"] = market_source
+            post_export["collected_at_utc"] = collected_at_utc
+            post_export["reddit_query"] = keywords
+            post_export["sentiment_model"] = SENTIMENT_MODEL
+            post_export["semantic_threshold"] = float("nan")
+            post_export["n_raw_posts_for_market"] = raw_n
+            post_export["n_after_filter_for_market"] = len(scored)
+            titles = post_export.get("title", pd.Series([""] * len(post_export))).fillna("")
+            texts = post_export.get("text", pd.Series([""] * len(post_export))).fillna("")
+            post_export["text_for_sentiment"] = (
+                titles + " " + texts
+            ).str.replace(r"\s+", " ", regex=True).str.strip()
+            post_cols = [
+                "market_id", "clob_token_id", "market_question", "market_url",
+                "probability", "category", "api_source", "collected_at_utc",
+                "reddit_query", "sentiment_model", "semantic_threshold",
+                "n_raw_posts_for_market", "n_after_filter_for_market",
+                "post_id", "content_type", "title", "text", "text_for_sentiment",
+                "subreddit", "score", "num_comments", "compound",
+                "sentiment_label", "created_utc", "url",
+            ]
+            for col in post_cols:
+                if col not in post_export.columns:
+                    post_export[col] = ""
+            all_posts.append(post_export[post_cols].copy())
 
             print(f"  [{len(pairs):>2}] p={prob:.2f}  mean={mean_s:+.3f}  "
                   f"posts={len(scored):>3}  [{keywords}]")
@@ -201,7 +185,11 @@ def main():
         posts_df.to_csv("data/posts_per_market.csv", index=False)
         print(f"Gespeichert: data/posts_per_market.csv  ({len(posts_df)} Posts)")
 
-    print(f"  Oe Posts/Markt: {pairs_df['n_posts'].mean():.0f}")
+    if pairs_df.empty:
+        print("  Keine auswertbaren Maerkte gespeichert.")
+        return
+
+    print(f"  Durchschnitt Posts/Markt: {pairs_df['n_posts'].mean():.0f}")
     print(f"  Pearson r (quick): ", end="")
     try:
         from scipy import stats
