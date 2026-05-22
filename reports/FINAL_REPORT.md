@@ -163,11 +163,13 @@ Eine klassische Imputation wurde bewusst nicht eingesetzt, weil bei Textdaten ei
 
 ### Text-Cleaning und Textrepräsentation
 
-Reddit-Daten sind im Rohzustand ungleichmässig: Manche Posts bestehen nur aus einem Linktitel, andere haben einen langen Body, wieder andere enthalten Markdown, URLs oder gelöschte Kommentare. Für die Analyse wurde deshalb eine stabile Textspalte gebaut:
+Reddit-Daten sind im Rohzustand ungleichmässig: Manche Posts bestehen nur aus einem Linktitel, andere haben einen langen Body, wieder andere enthalten Markdown, URLs oder gelöschte Kommentare. Für die Analyse wurde deshalb eine stabile Textspalte gebaut.
 
-```text
-text_for_sentiment = title + " " + text
-```
+| Ausgangsdaten | Zielspalte |
+|---|---|
+| Reddit-Titel plus Reddit-Textkörper | `text_for_sentiment` |
+
+Ein Post ohne Body bleibt dadurch trotzdem nutzbar, weil der Titel als Textgrundlage erhalten bleibt.
 
 Die wichtigsten Entscheidungen waren:
 
@@ -253,9 +255,9 @@ Da Polymarket nicht für alle Märkte verlässliche Kategorien liefert, wurde ei
 
 Für die Sentiment-Analyse wird zuerst pro Reddit-Zeile ein auswertbarer Text gebildet:
 
-```text
-text_for_sentiment = Titel + " " + Textkörper
-```
+| Ausgangsdaten | Verwendeter Analyse-Text |
+|---|---|
+| Titel und Textkörper eines Reddit-Posts | `text_for_sentiment` |
 
 Das ist wichtig, weil viele Reddit-Posts nur einen Titel und keinen Body-Text haben. Der fehlende Body wird deshalb nicht als Fehler behandelt, sondern der Titel bleibt als verwertbare Information erhalten.
 
@@ -326,11 +328,9 @@ Der Ablauf ist:
 2. Das Zero-Shot-NLI-Modell `MoritzLaurer/deberta-v3-base-zeroshot-v2.0` vergleicht den Reddit-Text mit zwei Kandidaten:
    - Ereignis wird eintreten.
    - Ereignis wird nicht eintreten.
-3. Der Score wird als Differenz berechnet:
+3. Der Score wird als Differenz berechnet: `stance_score = P(ja) - P(nein)`.
 
-```text
-stance_score = P(Ereignis wird eintreten) - P(Ereignis wird nicht eintreten)
-```
+Dabei bedeutet `P(ja)`: Das Modell hält es für wahrscheinlich, dass der Text das Eintreten des Ereignisses unterstützt. `P(nein)` bedeutet: Das Modell hält es für wahrscheinlich, dass der Text gegen das Eintreten des Ereignisses spricht.
 
 Die Interpretation ist:
 

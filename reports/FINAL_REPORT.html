@@ -351,9 +351,22 @@ a { color: #1d4ed8; }
 </table>
 <p>Eine klassische Imputation wurde bewusst nicht eingesetzt, weil bei Textdaten ein fehlender Body inhaltlich etwas anderes bedeutet als ein zufällig fehlender Zahlenwert. Stattdessen wurde die Textrepräsentation so gebaut, dass vorhandene Titelinformationen erhalten bleiben.</p>
 <h3 id="text-cleaning-und-textreprasentation">Text-Cleaning und Textrepräsentation</h3>
-<p>Reddit-Daten sind im Rohzustand ungleichmässig: Manche Posts bestehen nur aus einem Linktitel, andere haben einen langen Body, wieder andere enthalten Markdown, URLs oder gelöschte Kommentare. Für die Analyse wurde deshalb eine stabile Textspalte gebaut:</p>
-<pre><code class="language-text">text_for_sentiment = title + &quot; &quot; + text
-</code></pre>
+<p>Reddit-Daten sind im Rohzustand ungleichmässig: Manche Posts bestehen nur aus einem Linktitel, andere haben einen langen Body, wieder andere enthalten Markdown, URLs oder gelöschte Kommentare. Für die Analyse wurde deshalb eine stabile Textspalte gebaut.</p>
+<table>
+<thead>
+<tr>
+<th>Ausgangsdaten</th>
+<th>Zielspalte</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Reddit-Titel plus Reddit-Textkörper</td>
+<td><code>text_for_sentiment</code></td>
+</tr>
+</tbody>
+</table>
+<p>Ein Post ohne Body bleibt dadurch trotzdem nutzbar, weil der Titel als Textgrundlage erhalten bleibt.</p>
 <p>Die wichtigsten Entscheidungen waren:</p>
 <ul>
 <li><strong>Titel und Body werden kombiniert.</strong> Dadurch gehen Link-Posts ohne Body nicht verloren, weil ihr Titel oft die zentrale Information enthält.</li>
@@ -552,8 +565,20 @@ a { color: #1d4ed8; }
 <p>Da Polymarket nicht für alle Märkte verlässliche Kategorien liefert, wurde eine regelbasierte Taxonomie verwendet. Kategorien werden aus der Marktfrage inferiert, etwa Sports, Legal, Geopolitics, Entertainment, Politics und Crypto. Diese Transformation ist transparent im Code und im Data Dictionary dokumentiert.</p>
 <h3 id="von-reddit-text-zu-sentiment-score">Von Reddit-Text zu Sentiment-Score</h3>
 <p>Für die Sentiment-Analyse wird zuerst pro Reddit-Zeile ein auswertbarer Text gebildet:</p>
-<pre><code class="language-text">text_for_sentiment = Titel + &quot; &quot; + Textkörper
-</code></pre>
+<table>
+<thead>
+<tr>
+<th>Ausgangsdaten</th>
+<th>Verwendeter Analyse-Text</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Titel und Textkörper eines Reddit-Posts</td>
+<td><code>text_for_sentiment</code></td>
+</tr>
+</tbody>
+</table>
 <p>Das ist wichtig, weil viele Reddit-Posts nur einen Titel und keinen Body-Text haben. Der fehlende Body wird deshalb nicht als Fehler behandelt, sondern der Titel bleibt als verwertbare Information erhalten.</p>
 <p>Danach klassifiziert <code>cardiffnlp/twitter-roberta-base-sentiment-latest</code> jeden Text als <code>positive</code>, <code>neutral</code> oder <code>negative</code>. Das Modell ist für Social-Media-Sprache geeignet und passt deshalb besser zu Reddit als ein rein finanzspezifisches Modell. Die Implementierung wandelt die Modellantwort in einen numerischen <code>compound</code>-Score um:</p>
 <table>
@@ -713,10 +738,9 @@ a { color: #1d4ed8; }
 <li>Das Zero-Shot-NLI-Modell <code>MoritzLaurer/deberta-v3-base-zeroshot-v2.0</code> vergleicht den Reddit-Text mit zwei Kandidaten:</li>
 <li>Ereignis wird eintreten.</li>
 <li>Ereignis wird nicht eintreten.</li>
-<li>Der Score wird als Differenz berechnet:</li>
+<li>Der Score wird als Differenz berechnet: <code>stance_score = P(ja) - P(nein)</code>.</li>
 </ol>
-<pre><code class="language-text">stance_score = P(Ereignis wird eintreten) - P(Ereignis wird nicht eintreten)
-</code></pre>
+<p>Dabei bedeutet <code>P(ja)</code>: Das Modell hält es für wahrscheinlich, dass der Text das Eintreten des Ereignisses unterstützt. <code>P(nein)</code> bedeutet: Das Modell hält es für wahrscheinlich, dass der Text gegen das Eintreten des Ereignisses spricht.</p>
 <p>Die Interpretation ist:</p>
 <table>
 <thead>
