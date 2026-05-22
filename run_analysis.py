@@ -1,20 +1,24 @@
 """
-Standalone-Skript: Markt-Analyse ohne Jupyter.
-Verbesserungen v2:
-  - Semantische Post-Filterung (sentence-transformers, all-MiniLM-L6-v2)
-  - FinBERT statt VADER (domänenspezifisch für Finanztexte)
-  - 10 Märkte mit je 30 Posts + 10 Kommentaren
+Standalone-Skript: Detailanalyse ohne Jupyter.
+Dieses Script ergänzt den schnellen Bulk-Run um Kommentare und semantische
+Post-Filterung. Der benotete Hauptlauf wird in `run_bulk.py` erzeugt.
+
+Aktuelle Konfiguration:
+  - bis zu 20 Märkte
+  - 30 Posts je Markt plus bis zu 10 Kommentare je Post
+  - Twitter-RoBERTa als Standardmodell fuer Reddit-Sprache
+  - optional Stance Detection ueber `INCLUDE_STANCE`
 
 Ausführen:
     .venv/Scripts/python.exe run_analysis.py
 """
 
-import sys, os, time, re
+import sys, os, time
 sys.path.insert(0, os.path.dirname(__file__))
 
 import numpy as np
 import pandas as pd
-from src import reddit, polymarket, sentiment
+from src import reddit, polymarket, sentiment, market_metadata
 
 # ── Konfiguration ─────────────────────────────────────────────────────────────
 MAX_MARKETS        = 20     # Mehr Märkte für bessere Statistik
@@ -26,31 +30,6 @@ SENTIMENT_MODEL    = sentiment.MODEL_ROBERTA   # Twitter-RoBERTa: besser für Re
 SEMANTIC_THRESHOLD = 0.20   # Mindest-Ähnlichkeit zur Markt-Frage
 SUBREDDITS = ["politics", "worldnews", "stocks", "investing", "news",
               "Economics", "geopolitics", "collapse", "Futurology"]
-
-NEGATIVE_QUESTION_WORDS = {
-    "recession", "shutdown", "impeach", "invade", "invasion",
-    "nuclear", "ban", "crash", "default", "hurricane", "attack",
-    "sanction", "collapse", "convict", "indict", "conflict",
-    "crisis", "fail", "war",
-}
-
-def question_polarity(question: str) -> int:
-    """Returns +1 for positive-framed questions, -1 for negative-framed.
-
-    Negative-framed: positive Reddit sentiment means the bad outcome is
-    *unlikely*, so we flip the sign before correlating with probability.
-    """
-    words = set(re.findall(r'[a-z]+', question.lower()))
-    return -1 if words & NEGATIVE_QUESTION_WORDS else +1
-
-
-STOPWORDS = {
-    "will", "would", "could", "should", "has", "have", "been", "the",
-    "and", "are", "for", "was", "not", "with", "this", "that", "from",
-    "its", "which", "when", "who", "how", "what", "why", "does", "did",
-    "any", "all", "into", "over", "about", "than", "more", "first",
-    "2024", "2025", "2026", "year", "end", "hit", "win", "get", "per",
-}
 
 SAMPLE_DATA = [
     {"question": "Will Trump be impeached in 2025?",              "probability": 0.08,  "category": "Politics"},
@@ -96,58 +75,37 @@ SAMPLE_DATA = [
 ]
 
 
-def extract_keywords(question: str, n: int = 4) -> str:
-    words = re.findall(r"[A-Za-z]{4,}", question)
-    keywords = [w for w in words if w.lower() not in STOPWORDS]
-    return " ".join(keywords[:n]) if keywords else question[:50]
-
-
-RELEVANT_KEYWORDS = [
-    "trump", "fed", "rate", "tariff", "recession", "ukraine", "russia",
-    "china", "taiwan", "election", "senate", "congress", "gdp", "inflation",
-    "bitcoin", "crypto", "war", "trade", "stock", "nasdaq", "dollar",
-    "gold", "oil", "iran", "nato", "ceasefire", "president", "democrat",
-    "republican", "economy", "market", "bank", "debt", "deficit",
-]
-
-
-def _filter_relevant(df: pd.DataFrame, n: int) -> pd.DataFrame:
-    """Filtert Märkte nach thematischer Relevanz (Politik/Wirtschaft/Geo)."""
-    if df.empty:
-        return df
-    mask = df["question"].str.lower().apply(
-        lambda q: any(kw in set(re.findall(r'[a-z]+', q)) for kw in RELEVANT_KEYWORDS)
-    )
-    relevant = df[mask]
-    if len(relevant) >= n:
-        return relevant.head(n)
-    # Auffüllen mit verbleibenden wenn zu wenige relevante
-    rest = df[~mask].head(n - len(relevant))
-    return pd.concat([relevant, rest]).head(n)
-
-
 def main():
-    # Märkte laden – mehr holen, dann relevante filtern
+    collected_at_utc = pd.Timestamp.utcnow().isoformat()
     try:
         all_markets = polymarket.get_markets(limit=200)
-        if all_markets.empty or 'probability' not in all_markets.columns:
+        if all_markets.empty or "probability" not in all_markets.columns:
             raise ValueError("Leere API")
-        sample_markets = _filter_relevant(all_markets, MAX_MARKETS)
-        print(f"Polymarket live: {len(all_markets)} Märkte gesamt, {len(sample_markets)} relevant")
-    except Exception as e:
-        print(f"Polymarket API nicht erreichbar -> Demo-Datensatz")
+        sample_markets = market_metadata.filter_relevant_markets(all_markets, MAX_MARKETS)
+        market_source = "polymarket_live"
+        print(f"Polymarket live: {len(all_markets)} Maerkte gesamt, {len(sample_markets)} relevant")
+    except Exception as exc:
+        print(f"Polymarket API nicht erreichbar -> Demo-Datensatz ({exc})")
         sample_markets = pd.DataFrame(SAMPLE_DATA).head(MAX_MARKETS)
+        market_source = "demo_fallback"
 
-    print(f"\nStarte Analyse: {len(sample_markets)} Märkte, Modell={SENTIMENT_MODEL}")
+    print(f"\nStarte Analyse: {len(sample_markets)} Maerkte, Modell={SENTIMENT_MODEL}")
     print(f"Posts/Markt={POSTS_PER_MARKET}, Kommentare={INCLUDE_COMMENTS} (max {COMMENT_LIMIT})")
     print("-" * 60)
 
     pairs = []
-    for i, row in sample_markets.iterrows():
-        question = row['question']
-        prob     = row['probability']
-        category = row.get('category', 'Unknown')
-        keywords = extract_keywords(question, n=4)
+    all_posts = []
+    for position, (_, row) in enumerate(sample_markets.iterrows(), start=1):
+        market_fields = market_metadata.stable_market_fields(
+            row=row,
+            position=position,
+            api_source=market_source,
+            collected_at_utc=collected_at_utc,
+        )
+        question = market_fields["question"]
+        prob = market_fields["probability"]
+        category = market_fields["category"]
+        keywords = market_metadata.extract_keywords(question)
 
         try:
             raw = reddit.get_posts(
@@ -159,21 +117,21 @@ def main():
                 print(f"  SKIP [{keywords}] keine Posts")
                 continue
 
-            # Semantische Filterung: nur Posts die zur Frage passen
-            raw = sentiment.semantic_filter(raw, question, threshold=SEMANTIC_THRESHOLD)
-            if len(raw) < 3:
+            raw_n = len(raw)
+            filtered = sentiment.semantic_filter(raw, question, threshold=SEMANTIC_THRESHOLD)
+            if len(filtered) < 3:
                 print(f"  SKIP [{keywords}] zu wenige relevante Posts nach Filterung")
                 continue
 
-            n_posts    = (raw['content_type'] == 'post').sum()    if 'content_type' in raw.columns else len(raw)
-            n_comments = (raw['content_type'] == 'comment').sum() if 'content_type' in raw.columns else 0
+            n_posts = (filtered["content_type"] == "post").sum() if "content_type" in filtered.columns else len(filtered)
+            n_comments = (filtered["content_type"] == "comment").sum() if "content_type" in filtered.columns else 0
 
-            scored     = sentiment.analyze(raw, model=SENTIMENT_MODEL)
-            mean_s     = scored['compound'].mean()
-            weights    = np.log1p(scored['score'].clip(lower=0).fillna(0).values)
-            weighted_s = np.average(scored['compound'].values, weights=weights) if weights.sum() > 0 else mean_s
+            scored = sentiment.analyze(filtered, model=SENTIMENT_MODEL)
+            mean_s = scored["compound"].mean()
+            weights = np.log1p(scored["score"].clip(lower=0).fillna(0).values)
+            weighted_s = np.average(scored["compound"].values, weights=weights) if weights.sum() > 0 else mean_s
 
-            polarity = question_polarity(question)
+            polarity = market_metadata.question_polarity(question)
 
             if INCLUDE_STANCE:
                 hyp = sentiment.question_to_hypothesis(question)
@@ -182,35 +140,82 @@ def main():
                 stance_s = float("nan")
 
             pairs.append({
-                'question':          question,
-                'probability':       prob,
-                'mean_compound':     mean_s,
-                'weighted_compound': weighted_s,
-                'adjusted_compound': mean_s    * polarity,
-                'adjusted_weighted': weighted_s * polarity,
-                'polarity':          polarity,
-                'stance_score':      stance_s,
-                'n_posts':           n_posts,
-                'n_comments':        n_comments,
-                'n_total':           len(scored),
-                'keywords':          keywords,
-                'category':          category,
+                **market_fields,
+                "reddit_query": keywords,
+                "subreddits": ",".join(SUBREDDITS),
+                "sentiment_model": SENTIMENT_MODEL,
+                "semantic_threshold": SEMANTIC_THRESHOLD,
+                "mean_compound": mean_s,
+                "weighted_compound": weighted_s,
+                "adjusted_compound": mean_s * polarity,
+                "adjusted_weighted": weighted_s * polarity,
+                "polarity": polarity,
+                "stance_score": stance_s,
+                "n_posts": n_posts,
+                "n_comments": n_comments,
+                "n_total": len(scored),
+                "n_raw_posts": raw_n,
+                "n_after_semantic_filter": len(scored),
+                "keywords": keywords,
             })
+
+            post_export = scored.rename(columns={"id": "post_id"}).copy()
+            post_export["market_id"] = market_fields["market_id"]
+            post_export["clob_token_id"] = market_fields["clob_token_id"]
+            post_export["market_url"] = market_fields["market_url"]
+            post_export["market_question"] = question
+            post_export["probability"] = prob
+            post_export["category"] = category
+            post_export["api_source"] = market_source
+            post_export["collected_at_utc"] = collected_at_utc
+            post_export["reddit_query"] = keywords
+            post_export["sentiment_model"] = SENTIMENT_MODEL
+            post_export["semantic_threshold"] = SEMANTIC_THRESHOLD
+            post_export["n_raw_posts_for_market"] = raw_n
+            post_export["n_after_filter_for_market"] = len(scored)
+            titles = post_export.get("title", pd.Series([""] * len(post_export))).fillna("")
+            texts = post_export.get("text", pd.Series([""] * len(post_export))).fillna("")
+            post_export["text_for_sentiment"] = (
+                titles + " " + texts
+            ).str.replace(r"\s+", " ", regex=True).str.strip()
+            post_cols = [
+                "market_id", "clob_token_id", "market_question", "market_url",
+                "probability", "category", "api_source", "collected_at_utc",
+                "reddit_query", "sentiment_model", "semantic_threshold",
+                "n_raw_posts_for_market", "n_after_filter_for_market",
+                "post_id", "content_type", "title", "text", "text_for_sentiment",
+                "subreddit", "score", "num_comments", "compound",
+                "sentiment_label", "semantic_score", "created_utc", "url",
+            ]
+            for col in post_cols:
+                if col not in post_export.columns:
+                    post_export[col] = ""
+            all_posts.append(post_export[post_cols].copy())
+
             print(f"  [{len(pairs):>2}] p={prob:.2f}  mean={mean_s:+.3f}  "
                   f"posts={n_posts}  comments={n_comments}  [{keywords}]")
 
         except Exception as e:
             print(f"  Fehler bei '{question[:40]}': {e}")
 
-        time.sleep(3.0)   # Mehr Pause wegen INCLUDE_COMMENTS
+        time.sleep(3.0)
 
-    # Speichern
     pairs_df = pd.DataFrame(pairs)
     os.makedirs("data", exist_ok=True)
     pairs_df.to_csv("data/correlation_pairs.csv", index=False)
     print(f"\nGespeichert: data/correlation_pairs.csv  ({len(pairs_df)} Maerkte)")
-    print(f"  Ø Posts/Markt:      {pairs_df['n_posts'].mean():.0f}")
-    print(f"  Ø Kommentare/Markt: {pairs_df['n_comments'].mean():.0f}")
+
+    if all_posts:
+        posts_df = pd.concat(all_posts, ignore_index=True)
+        posts_df.to_csv("data/posts_per_market_detail.csv", index=False)
+        print(f"Gespeichert: data/posts_per_market_detail.csv  ({len(posts_df)} Posts/Kommentare)")
+
+    if pairs_df.empty:
+        print("  Keine auswertbaren Maerkte gespeichert.")
+        return
+
+    print(f"  Durchschnitt Posts/Markt:      {pairs_df['n_posts'].mean():.0f}")
+    print(f"  Durchschnitt Kommentare/Markt: {pairs_df['n_comments'].mean():.0f}")
 
 
 if __name__ == "__main__":

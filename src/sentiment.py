@@ -1,5 +1,5 @@
 """Sentiment analysis – VADER (default), FinBERT, Twitter-RoBERTa.
-Stance Detection – Zero-Shot NLI (DeBERTa-v3-small, ~85 MB).
+Stance Detection – Zero-Shot NLI (DeBERTa-v3-base).
 
 Modelle:
   'vader'           – regelbasiert, schnell, kein Download
@@ -257,7 +257,7 @@ def detect_stance(
             from transformers import pipeline as hf_pipeline
         except ImportError:
             raise ImportError("Stance Detection benötigt: pip install transformers torch")
-        print(f"[stance] Lade '{MODEL_NLI}' (~85 MB, einmalig) …")
+        print(f"[stance] Lade '{MODEL_NLI}' (einmalig, groesseres Transformer-Modell) …")
         _nli_pipe = hf_pipeline(
             "zero-shot-classification",
             model=MODEL_NLI,
