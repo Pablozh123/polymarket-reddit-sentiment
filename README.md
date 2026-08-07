@@ -1,9 +1,37 @@
 # Polymarket Reddit Sentiment
 
-**Kurs:** Data Wrangling & Engineering (FHNW)
-**Thema:** Stimmungsanalyse von Reddit-Posts korreliert mit Polymarket-Vorhersagemärkten
+**Does Reddit sentiment predict prediction-market prices? Measured on live data: no.**
+
+An ETL + NLP pipeline built for the FHNW Data Wrangling & Engineering course. It
+loads live Polymarket markets, derives Reddit search queries from each market
+question, collects and filters matching posts, scores them with VADER, FinBERT
+and Twitter-RoBERTa plus a zero-shot stance model, and correlates the aggregated
+signal with market probabilities.
+
+**Data:** 29 live markets, 725 posts across 7 subreddits, no demo fallbacks.
+
+**Findings** (full analysis in [reports/FINAL_REPORT.pdf](reports/FINAL_REPORT.pdf)):
+
+- Sentiment vs. market probability: Pearson r = +0.08 (p = 0.68) - no
+  significant relationship. Direction agreement 44.8%, effectively a coin flip.
+- Stance detection, although methodically closer to the market question, does
+  no better (r = -0.09, p = 0.66).
+- What DOES differ: sentiment between subreddits (Kruskal-Wallis H = 92.05,
+  p = 1.1e-17) - finance subreddits skew positive, politics and world news
+  negative. The sports category is the only borderline signal (r = +0.50,
+  p = 0.058, n = 15).
+
+The honest conclusion: prediction-market prices carry more than public mood -
+liquidity, specialised knowledge and market mechanics. Reddit sentiment alone
+is not a forecasting signal, and this dataset shows it cleanly.
+
+The report and notebooks below are in German (course language); the code and
+its comments are readable without it.
 
 ---
+
+## Deutsche Projektdokumentation
+
 
 ## Was macht dieses Projekt?
 
