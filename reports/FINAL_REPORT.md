@@ -1,9 +1,6 @@
 ﻿# Polymarket Reddit Sentiment
 
-**Projektbericht für Data Wrangling & Engineering FS26**  
-**Autoren:** Pablo Cruz und Daliah Beck  
-**Finaler Live-Run:** 22.05.2026, 12:29 UTC  
-**Datengrundlage:** 29 Polymarket-Märkte, 725 Reddit-Posts, 7 Subreddits, keine Demo-Fallback-Daten
+
 
 ## Management Summary
 
